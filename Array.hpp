@@ -4,7 +4,7 @@
 #include <assert.h>
 
 // does not respect constructors & destructors
-// @TODO(matiTechno): copy constructor, swap, etc.
+
 template<typename T>
 class Array
 {
@@ -64,7 +64,7 @@ public:
         return data_[i];
     }
     
-    // @TODO(matiTechno): return iterator not reference
+    // @ return iterator not reference
     T& erase(int i)
     {
         return erase(i, 1);
@@ -117,6 +117,7 @@ private:
 };
 
 // does not respect constructors & destructors
+
 template<typename T, int N>
 class FixedArray
 {

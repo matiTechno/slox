@@ -72,7 +72,7 @@ struct Token
 
 enum class ValueType
 {
-    BOOL,
+    BOOLEAN,
     NUMBER,
     STRING,
     NIL
@@ -138,10 +138,44 @@ struct
     Array<Expr> expressions;
     char scratchBuf[10000];
 
+    // temp storage for string values
+    char byteArray[10000];
+    int end = 0;
+
     int addExpr(const Expr expr)
     {
         expressions.pushBack(expr);
         return expressions.size() - 1;
+    }
+
+    const char* addString(const char* const string, int len)
+    {
+        const int start = end;
+        end += len + 1;
+
+        assert(end <= int(sizeof(byteArray))); // @ cast
+
+        memcpy(&byteArray[start], string, len);
+
+        byteArray[end - 1] = '\0';
+
+        return &byteArray[start];
+    }
+
+    const char* addString(const char* const lstr, const char* const rstr)
+    {
+        const int start = end;
+        const int llen = strlen(lstr);
+        const int rlen = strlen(rstr);
+
+        end += llen + rlen + 1;
+
+        assert(end <= int(sizeof(byteArray))); // @ cast
+
+        memcpy(&byteArray[start], lstr, llen);
+        memcpy(&byteArray[start + llen], rstr, rlen + 1);
+
+        return &byteArray[start];
     }
 
 } static _context;
@@ -307,6 +341,7 @@ bool expression(Expr& expr, const Token** const token)
     return binary(expr, token, BinaryType::EQUALITY);
 }
 
+// @ remove old expressions from _context.expressions and clear _context.byteArray
 bool parse(Expr& expr, const Array<Token>& tokens)
 {
     const Token* token = tokens.begin();
@@ -520,10 +555,10 @@ bool scan(Array<Token>& tokens, const char* const source)
                         lexer.advance();
 
                     const int len = min(int(lexer.pos() - begin + 1),
-                                        int(sizeof(_context.scratchBuf - 1)));
+                                        int(sizeof(_context.scratchBuf) - 1));
 
                     memcpy(_context.scratchBuf, begin, len);
-                    _context.scratchBuf[len + 1] = '\0';
+                    _context.scratchBuf[len] = '\0';
                     lexer.addToken(TokenType::NUMBER, atof(_context.scratchBuf));
                 }
                 else if(isAlphanumeric(c))
@@ -567,16 +602,216 @@ bool scan(Array<Token>& tokens, const char* const source)
     return !error;
 }
 
+bool evaluate(Value& value, const Expr& expr);
+
+bool isTrue(const Value& value)
+{
+    if(value.type == ValueType::NIL) return false;
+    if(value.type == ValueType::BOOLEAN) return value.boolean;
+    return true;
+}
+
+bool isEqual(const Value& l, const Value& r)
+{
+    if(l.type == r.type)
+    {
+        switch(l.type)
+        {
+            case ValueType::NIL: return true;
+            case ValueType::BOOLEAN: return l.boolean == r.boolean;
+            case ValueType::NUMBER: return l.number == r.number;
+            case ValueType::STRING: return strcmp(l.string, r.string) == 0;
+
+            default: assert(false);
+        }
+    }
+
+    return false;
+}
+
+bool evaluateLiteral(Value& value, const Expr& expr)
+{
+    const Token& token = expr.literalToken;
+
+    switch(token.type)
+    {
+        case TokenType::FALSE:
+        {
+            value.type = ValueType::BOOLEAN;
+            value.boolean = false;
+            break;
+        }
+        case TokenType::TRUE:
+        {
+            value.type = ValueType::BOOLEAN;
+            value.boolean = true;
+            break;
+        }
+        case TokenType::NIL:
+        {
+            value.type = ValueType::NIL;
+            break;
+        }
+        case TokenType::NUMBER:
+        {
+            value.type = ValueType::NUMBER;
+            value.number = token.number;
+            break;
+        }
+        case TokenType::STRING:
+        {
+            value.type = ValueType::STRING;
+            value.string = _context.addString(token.string.begin, token.string.len);
+            break;
+        }
+
+        default: assert(false);
+    }
+
+    return true;
+}
+
+bool evaluateBinary(Value& value, const Expr& expr)
+{
+    Value valueLeft;
+    Value valueRight;
+
+    if(!evaluate(valueLeft, _context.expressions[expr.binary.idxExprLeft])) return false;
+    if(!evaluate(valueRight, _context.expressions[expr.binary.idxExprRight])) return false;
+
+    const Token& token = expr.binary.operatorToken;
+
+    if(token.type == TokenType::BANG_EQUAL)
+    {
+        value.type = ValueType::BOOLEAN;
+        value.boolean = !isEqual(valueLeft, valueRight);
+    }
+    else if(token.type == TokenType::EQUAL_EQUAL)
+    {
+        value.type = ValueType::BOOLEAN;
+        value.boolean = isEqual(valueLeft, valueRight);
+    }
+    else
+    {
+
+        if(valueLeft.type != valueRight.type)
+        {
+            printError(token.col, token.line,
+                        "this operator only works with values of the same type");
+            return false;
+        }
+
+        if(token.type == TokenType::PLUS)
+        {
+            value.type = valueLeft.type;
+
+            if(value.type == ValueType::NUMBER)
+                value.number = valueLeft.number + valueRight.number;
+            else if(value.type == ValueType::STRING)
+                value.string = _context.addString(valueLeft.string, valueRight.string);
+            else
+            {
+                printError(token.col, token.line,
+                           "operator '+' only works with strings and numbers");
+                return false;
+            }
+        }
+        else
+        {
+            if(valueLeft.type != ValueType::NUMBER)
+            {
+                printError(token.col, token.line, "this operator only works with numbers");
+                return false;
+            }
+
+            value.type = ValueType::NUMBER;
+
+            if(token.type == TokenType::MINUS)
+                value.number = valueLeft.number - valueRight.number;
+
+            else if(token.type == TokenType::STAR)
+                value.number = valueLeft.number * valueRight.number;
+
+            else if(token.type == TokenType::SLASH)
+                value.number = valueLeft.number / valueRight.number;
+
+            else if(token.type == TokenType::GREATER)
+                value.number = valueLeft.number > valueRight.number;
+
+            else if(token.type == TokenType::GREATER_EQUAL)
+                value.number = valueLeft.number >= valueRight.number;
+
+            else if(token.type == TokenType::LESS)
+                value.number = valueLeft.number < valueRight.number;
+
+            else if(token.type == TokenType::LESS_EQUAL)
+                value.number = valueLeft.number <= valueRight.number;
+
+            else
+                assert(false);
+        }
+    }
+
+    return true;
+}
+
+bool evaluateUnary(Value& value, const Expr& expr)
+{
+    Value valueRight;
+    if(!evaluate(valueRight, _context.expressions[expr.unary.idxExpr])) return false;
+
+    const Token token = expr.unary.operatorToken;
+
+    if(token.type == TokenType::MINUS)
+    {
+        if(valueRight.type != ValueType::NUMBER)
+        {
+            printError(token.col, token.line, "'-' unary operator works only with numbers");
+            return false;
+        }
+
+        value.type = ValueType::NUMBER;
+        value.number = -valueRight.number;
+    }
+    // BANG
+    else
+    {
+        value.type = ValueType::BOOLEAN;
+        value.boolean = !isTrue(valueRight);
+    }
+
+    return true;
+}
+
+// @ GroupingExpr instead of Expr as parameter type?
+bool evaluateGrouping(Value& value, const Expr& expr)
+{
+    return evaluate(value, _context.expressions[expr.grouping.idxExpr]);
+}
+
 bool evaluate(Value& value, const Expr& expr)
 {
-    (void)value;
-    (void)expr;
-    return false;
+    switch(expr.type)
+    {
+        case ExprType::LITERAL: return evaluateLiteral(value, expr);
+        case ExprType::UNARY: return evaluateUnary(value, expr);
+        case ExprType::GROUPING: return evaluateGrouping(value, expr);
+        case ExprType::BINARY: return evaluateBinary(value, expr);
+    };
+    assert(false);
 }
 
 void print(const Value& value)
 {
-    (void)value;
+    switch(value.type)
+    {
+        case ValueType::BOOLEAN: printf("> %s\n", value.boolean ? "true" : "false"); break;
+        case ValueType::NIL: printf("> nil\n"); break;
+        case ValueType::STRING: printf("> \"%s\"\n", value.string); break;
+        case ValueType::NUMBER: printf("> %f\n", value.number); break;
+
+        default: assert(false);
+    }
 }
 
 int main()
@@ -588,8 +823,8 @@ int main()
     Expr expr;
     bool error = false;
 
-    error = scan(tokens, source) || error;
-    error = parse(expr, tokens) || error;
+    error = !scan(tokens, source) || error;
+    error = !parse(expr, tokens) || error;
 
     if(!error)
     {
