@@ -1,8 +1,7 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
 #include "Array.hpp"
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
 
 bool isDigit(const char c) {return c >= '0' && c <= '9';}
 
@@ -11,509 +10,594 @@ bool isAlphanumeric(const char c)
     return isDigit(c) || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
 }
 
-struct Token
+template<typename T>
+T min(T l, T r) {return l > r ? r : l;}
+
+template<typename T, int N>
+int getSize(T(&)[N]) {return N;}
+
+enum class TokenType
 {
-    enum Type
-    {
-        // single character tokens
-        LEFT_PAREN, RIGHT_PAREN, LEFT_BRACE, RIGHT_BRACE,
-        COMMA, DOT, MINUS, PLUS, SEMICOLON, SLASH, STAR,
+    LOX_EOF = 0,
 
-        // one or two character
-        BANG, BANG_EQUAL,
-        EQUAL, EQUAL_EQUAL,
-        GREATER, GREATER_EQUAL,
-        LESS, LESS_EQUAL,
+    // single-character tokens
+    LEFT_PAREN, RIGHT_PAREN, LEFT_BRACE, RIGHT_BRACE,
+    COMMA, DOT, MINUS, PLUS, SEMICOLON, SLASH, STAR,
 
-        // literls
-        IDENTIFIER, STRING, NUMBER,
+    // one or two character tokens
+    BANG, BANG_EQUAL,
+    EQUAL, EQUAL_EQUAL,
+    GREATER, GREATER_EQUAL,
+    LESS, LESS_EQUAL,
 
-        // keywords
-        AND, CLASS, ELSE, FALSE, FUN, FOR, IF, NIL, OR,
-        PRINT, RETURN, SUPER, THIS, TRUE, VAR, WHILE,
+    // literls
+    IDENTIFIER, STRING, NUMBER,
 
-        LOX_EOF,
-
-        NOT_INIT
-    };
-
-    Type type;
-    int line;
-
-    union
-    {
-        struct
-        {
-            const char* ptr;
-            int len;
-        } str;
-
-        double number;
-    };
+    // keywords
+    AND, CLASS, ELSE, FALSE, FUN, FOR, IF, NIL, OR,
+    PRINT, RETURN, SUPER, THIS, TRUE, VAR, WHILE
 };
 
 struct Keyword
 {
     const char* str;
-    Token::Type tokenType;
+    TokenType tokenType;
 };
 
-static const Keyword _keywords[] =
+static Keyword _keywords[] = {
+    {"and", TokenType::AND}, {"class", TokenType::CLASS}, {"else", TokenType::ELSE},
+    {"false", TokenType::FALSE}, {"fun", TokenType::FUN}, {"for", TokenType::FOR},
+    {"if", TokenType::IF}, {"nil", TokenType::NIL}, {"or", TokenType::OR},
+    {"print", TokenType::PRINT}, {"return", TokenType::RETURN}, {"super", TokenType::SUPER},
+    {"this", TokenType::THIS}, {"ver", TokenType::VAR}, {"while", TokenType::WHILE}
+};
+
+struct Token
 {
-    {"and", Token::AND}, {"class", Token::CLASS}, {"else", Token::ELSE}, {"false", Token::FALSE},
-    {"fun", Token::FUN}, {"for", Token::FOR}, {"if", Token::IF}, {"nil", Token::NIL},
-    {"or", Token::OR}, {"print", Token::PRINT}, {"return", Token::RETURN}, {"super", Token::SUPER},
-    {"this", Token::THIS}, {"ver", Token::VAR}, {"while", Token::WHILE}
+    TokenType type;
+    int col;
+    int line;
+
+    union
+    {
+        double number;
+
+        struct
+        {
+            const char* begin;
+            int len;
+        } string; // string literal or identifier
+    };
+};
+
+enum class ValueType
+{
+    BOOL,
+    NUMBER,
+    STRING,
+    NIL
+};
+
+struct Value
+{
+    ValueType type;
+
+    union
+    {
+        bool boolean;
+        double number;
+        const char* string;
+    };
+};
+
+enum class ExprType
+{
+    BINARY,
+    GROUPING,
+    LITERAL,
+    UNARY
 };
 
 struct Expr
 {
-    Expr* left = nullptr;
-    Token token = {Token::NOT_INIT};
-    Expr* right = nullptr;
+    ExprType type; // we evaluate the expression based on its type
+
+    union
+    {
+        struct
+        {
+            int idxExprLeft;
+            int idxExprRight;
+            Token operatorToken;
+        } binary;
+
+        struct
+        {
+            int idxExpr;
+        } grouping; // @ we need 'grouping' for some reason; I don't know why yet
+
+        struct
+        {
+            int idxExpr;
+            Token operatorToken;
+        } unary;
+
+        Token literalToken;
+    };
 };
 
-Token evaluate(const Expr& expr)
+struct Line
 {
-    Token tokLeft, tokRight;
-
-    if(expr.left)
-        tokLeft = evaluate(*expr.left);
-
-    if(expr.right)
-        tokRight = evaluate(*expr.right);
-
-    switch(expr.token.type)
-    {
-        case Token::NUMBER:
-        case Token::STRING: return expr.token;
-
-        case Token::PLUS:
-        {
-            Token tok;
-            tok.type = Token::NUMBER;
-            // @ report error if tokLeft or tokRight are not numbers,
-            // or if tokLeft or toRight are uninitialized
-            tok.number = tokLeft.number + tokRight.number;
-            return tok;
-        }
-        case Token::MINUS:
-        {
-            Token tok;
-            tok.type = Token::NUMBER;
-
-            if(tokLeft.type == Token::NOT_INIT)
-                tok.number = -tokRight.number;
-            else
-                tok.number = tokLeft.number - tokRight.number;
-
-            return tok;
-        }
-        case Token::STAR:
-        {
-            Token tok;
-            tok.type = Token::NUMBER;
-            tok.number = tokLeft.number * tokRight.number;
-            return tok;
-        }
-        case Token::SLASH:
-        {
-            Token tok;
-            tok.type = Token::NUMBER;
-            tok.number = tokLeft.number / tokRight.number;
-            return tok;
-        }
-
-        // @
-        default: return {Token::NIL};
-    }
-}
-
-void interpret(const Expr& expr)
-{
-    Token token = evaluate(expr);
-
-    printf("> ");
-
-    switch(token.type)
-    {
-        case Token::NUMBER: printf("%f\n", token.number); break;
-        case Token::STRING: printf("%.*s\n", token.str.len, token.str.ptr); break;
-
-        default: break;
-    }
-}
-
-template<typename T, int N>
-int getSize(T(&)[N]) {return N;}
+    const char* begin;
+    int len;
+};
 
 struct
 {
-    Expr data[10000];
-    int endIdx = 0;
+    Array<Line> lines;
+    Array<Expr> expressions;
+    char scratchBuf[10000];
 
-    Expr* push(const Expr& expr)
+    int addExpr(const Expr expr)
     {
-        assert(endIdx < getSize(data) - 1);
-        data[endIdx] = expr;
-        ++endIdx;
-        return &data[endIdx - 1];
+        expressions.pushBack(expr);
+        return expressions.size() - 1;
     }
 
-} static exprArray;
+} static _context;
 
-#define CHECK(x) x if(error) return {};
-
-struct Parser
+void printError(int col, int line, const char* str)
 {
-    Parser(const Array<Token>& tokens): tokens(tokens) {}
+    printf("%.*s\n", _context.lines[line - 1].len, _context.lines[line - 1].begin);
 
-    const Array<Token>& tokens;
-    int tokIdx;
-    bool error;
+    for(int i = 0; i < col - 1; ++i)
+        putchar('-');
 
-    bool parse(Expr& expr)
+    printf("^\n%d:%d: %s\n", line, col, str);
+}
+
+bool expression(Expr& expr, const Token** const token);
+
+bool primary(Expr& outputExpr, const Token** const token)
+{
+    const TokenType type = (**token).type;
+
+    if(type == TokenType::FALSE || type == TokenType::TRUE || type == TokenType::NIL ||
+       type == TokenType::NUMBER || type == TokenType::STRING)
     {
-        tokIdx = 0;
-        exprArray.endIdx = 0;
-        error = false;
-
-        expr = expression();
-
-        return !error;
+        outputExpr.type = ExprType::LITERAL;
+        outputExpr.literalToken = **token;
+        ++(*token);
+        return true;
     }
-
-    Expr expression()
+    else if(type == TokenType::LEFT_PAREN)
     {
-        return equality();
-    }
+        ++(*token);
+        Expr expr;
+        if(!expression(expr, token)) return false;
 
-    Expr equality()
-    {
-        CHECK( Expr expr = comparison(); )
-
-        while( (tokIdx < tokens.size()) &&
-               (tokens[tokIdx].type == Token::BANG_EQUAL ||
-                    tokens[tokIdx].type == Token::EQUAL_EQUAL) )
+        if((**token).type == TokenType::RIGHT_PAREN)
         {
-            Expr* exprLeft = exprArray.push(expr);
-
-            Token op = tokens[tokIdx];
-            ++tokIdx;
-
-            CHECK( Expr* exprRight = exprArray.push(comparison()); )
-
-            expr = {exprLeft, op, exprRight};
+            ++(*token);
+            outputExpr.type = ExprType::GROUPING;
+            outputExpr.grouping.idxExpr = _context.addExpr(expr);
+            return true;
         }
-
-        return expr;
+        else
+        {
+            printError((**token).col, (**token).line, "expected ')' after expression");
+            return false;
+        }
     }
 
-    Expr comparison()
+    printError((**token).col, (**token).line, "expected expression");
+    return false;
+}
+
+bool unary(Expr& outputExpr, const Token** const token)
+{
+    if((**token).type == TokenType::BANG || (**token).type == TokenType::MINUS)
     {
-        CHECK( Expr expr = addition(); )
+        Token operatorToken = **token;
+        ++(*token);
 
-        while( (tokIdx < tokens.size()) &&
-               (tokens[tokIdx].type == Token::GREATER ||
-                    tokens[tokIdx].type == Token::GREATER_EQUAL ||
-                    tokens[tokIdx].type == Token::LESS ||
-                    tokens[tokIdx].type == Token::LESS_EQUAL) )
-        {
-            Expr* exprLeft = exprArray.push(expr);
+        Expr expr;
+        if(!unary(expr, token)) return false;
 
-            Token op = tokens[tokIdx];
-            ++tokIdx;
-
-            CHECK( Expr* exprRight = exprArray.push(addition()); )
-
-            expr = {exprLeft, op, exprRight};
-        }
-
-        return expr;
+        outputExpr.type = ExprType::UNARY;
+        outputExpr.unary.idxExpr = _context.addExpr(expr);
+        outputExpr.unary.operatorToken = operatorToken;
+        return true;
     }
 
-    Expr addition()
+    return primary(outputExpr, token);
+}
+
+enum class BinaryType
+{
+    EQUALITY,
+    COMPARISON,
+    ADDITION,
+    MULTIPLICATION
+};
+
+// all LOX binary operators are left-associative
+
+bool binary(Expr& expr, const Token** const token, BinaryType binaryType)
+{
+    TokenType tokenTypes[5] = {};
+    BinaryType nextBinaryType;
+
+    switch(binaryType)
     {
-        CHECK( Expr expr = multiplication(); )
-
-        while( (tokIdx < tokens.size()) &&
-               (tokens[tokIdx].type == Token::MINUS || tokens[tokIdx].type == Token::PLUS) )
+        case BinaryType::EQUALITY:
         {
-            Expr* exprLeft = exprArray.push(expr);
-
-            Token op = tokens[tokIdx];
-            ++tokIdx;
-
-            CHECK( Expr* exprRight = exprArray.push(multiplication()); )
-
-            expr = {exprLeft, op, exprRight};
+            nextBinaryType = BinaryType::COMPARISON;
+            tokenTypes[0] = TokenType::EQUAL_EQUAL;
+            tokenTypes[1] = TokenType::BANG_EQUAL;
+            break;
         }
-
-        return expr;
+        case BinaryType::COMPARISON:
+        {
+            nextBinaryType = BinaryType::ADDITION;
+            tokenTypes[0] = TokenType::GREATER;
+            tokenTypes[1] = TokenType::GREATER_EQUAL;
+            tokenTypes[2] = TokenType::LESS;
+            tokenTypes[3] = TokenType::LESS_EQUAL;
+            break;
+        }
+        case BinaryType::ADDITION:
+        {
+            nextBinaryType = BinaryType::MULTIPLICATION;
+            tokenTypes[0] = TokenType::PLUS;
+            tokenTypes[1] = TokenType::MINUS;
+            break;
+        }
+        case BinaryType::MULTIPLICATION:
+        {
+            tokenTypes[0] = TokenType::STAR;
+            tokenTypes[1] = TokenType::SLASH;
+            break;
+        }
     }
 
-    Expr multiplication()
+    if(binaryType != BinaryType::MULTIPLICATION)
+    { if(!binary(expr, token, nextBinaryType)) return false; }
+    else
+    { if(!unary(expr, token)) return false;}
+
+    for(;;)
     {
-        CHECK( Expr expr = unary(); )
+        const TokenType* tokenType = tokenTypes;
+        bool match = false;
 
-        while( (tokIdx < tokens.size()) &&
-               (tokens[tokIdx].type == Token::SLASH || tokens[tokIdx].type == Token::STAR) )
+        while(*tokenType != TokenType::LOX_EOF)
         {
-            Expr* exprLeft = exprArray.push(expr);
-
-            Token op = tokens[tokIdx];
-            ++tokIdx;
-
-            CHECK( Expr* exprRight = exprArray.push(unary()); )
-
-            expr = {exprLeft, op, exprRight};
-        }
-
-        return expr;
-    }
-
-    Expr unary()
-    {
-        if(error)
-            return {};
-
-        if( (tokIdx < tokens.size()) &&
-            (tokens[tokIdx].type == Token::BANG || tokens[tokIdx].type == Token::MINUS) )
-        {
-            Token op = tokens[tokIdx];
-            ++tokIdx;
-            
-            Expr* exprRight = exprArray.push(unary());
-            return {nullptr, op, exprRight};
-        }
-
-        return primary();
-    }
-
-    Expr primary()
-    {
-        if( (tokIdx < tokens.size()) &&
-            (tokens[tokIdx].type == Token::FALSE || tokens[tokIdx].type == Token::TRUE ||
-                tokens[tokIdx].type == Token::NIL || tokens[tokIdx].type == Token::NUMBER ||
-                tokens[tokIdx].type == Token::STRING) )
-        {
-            Expr expr = {nullptr, tokens[tokIdx], nullptr};
-            ++tokIdx;
-            return expr;
-        }
-        else if( (tokIdx < tokens.size()) && (tokens[tokIdx].type == Token::LEFT_PAREN) )
-        {
-            ++tokIdx;
-            CHECK( const Expr expr = expression(); )
-
-            if( (tokIdx < tokens.size()) && (tokens[tokIdx].type == Token::RIGHT_PAREN) )
+            if(*tokenType == (**token).type)
             {
-                ++tokIdx;
-                return expr;
+                match = true;
+                break;
             }
-            else
-            {
-                printf("%d: expected ')' after expression\n", tokens[tokIdx].line);
-                error = true;
-                return {};
-            }
+            ++tokenType;
         }
 
-        printf("%d: expect expression\n", tokens[tokIdx].line);
-        error = true;
-        return {};
+        if(!match) break;
+
+        Token operatorToken = **token;
+        ++(*token);
+
+        Expr exprRight;
+
+        if(binaryType != BinaryType::MULTIPLICATION)
+        { if(!binary(exprRight, token, nextBinaryType)) return false; }
+        else
+        { if(!unary(exprRight, token)) return false;}
+
+        expr.binary.idxExprLeft = _context.addExpr(expr); // add expr to vector before modifying it
+        expr.type = ExprType::BINARY;
+        expr.binary.idxExprRight = _context.addExpr(exprRight);
+        expr.binary.operatorToken = operatorToken;
+    }
+
+    return true;
+}
+
+bool expression(Expr& expr, const Token** const token)
+{
+    return binary(expr, token, BinaryType::EQUALITY);
+}
+
+bool parse(Expr& expr, const Array<Token>& tokens)
+{
+    const Token* token = tokens.begin();
+    return expression(expr, &token);
+}
+
+struct Lexer
+{
+    Lexer(Array<Token>& tokens, const char* source): it(source), tokens(tokens) {}
+
+    int line = 1;
+    int col = 0;
+    int tokenCol;
+    int tokenLine;
+
+    void addToken(TokenType type) {addTokenImpl(type);}
+
+    void addToken(TokenType type, const char* string, int stringLen)
+    {
+        addTokenImpl(type, string, stringLen);
+    }
+    void addToken(TokenType type, double number)
+    {
+        addTokenImpl(type, nullptr, 0, number);
+    }
+
+    bool end() const {return *it == '\0';}
+
+    char advance()
+    {
+        ++it;
+        const char c = *(it - 1);
+
+        if(c == '\n')
+        {
+            ++line;
+            col = 0;
+        }
+        else
+            ++col;
+
+        return c;
+    }
+
+    bool match(char c)
+    {
+        if(end())
+            return false;
+
+        if(*it != c)
+            return false;
+
+        advance();
+        return true;
+    }
+
+    const char* pos() const {return it - 1;}
+    char peek() const {return *it;}
+    char peekNext() const {return end() ? *it : *(it + 1);}
+
+private:
+    const char* it;
+    Array<Token>& tokens;
+
+    void addTokenImpl(TokenType type, const char* string = nullptr, int stringLen = 0,
+            double number = 0.0)
+    {
+        Token token;
+        token.type = type;
+        token.col = tokenCol;
+        token.line = tokenLine;
+
+        if(string)
+        {
+            token.string.begin = string;
+            token.string.len = stringLen;
+        }
+        else
+            token.number = number;
+
+        tokens.pushBack(token);
     }
 };
 
-bool scan(Array<Token>& tokens, const char* const str)
+// scanning and lexing mean the same thing
+bool scan(Array<Token>& tokens, const char* const source)
 {
-    bool error = false;
-    const int len = strlen(str);
-    int idx = 0;
-    int line = 1;
+    _context.lines.clear();
+    Lexer lexer(tokens, source);
 
-    while(idx < len)
+    // fill _context.lines
     {
-        const char c = str[idx];
-        const char cnext = str[idx + 1];
+        const char* it = source;
+        int lineLen = 0;
+        const char* begin = it;
+        while(*it != '\0')
+        {
+            if(*it == '\n')
+            {
+                _context.lines.pushBack({begin, lineLen});
+                lineLen = 0;
+                begin = it + 1;
+            }
+            else
+                ++lineLen;
+
+            ++it;
+        }
+
+        _context.lines.pushBack({begin, lineLen});
+    }
+
+    bool error = false;
+
+    while(!lexer.end())
+    {
+        const char c = lexer.advance();
+        lexer.tokenCol = lexer.col;
+        lexer.tokenLine = lexer.line;
+        const char* const begin = lexer.pos();
 
         switch(c)
         {
-            case '(': tokens.pushBack({Token::LEFT_PAREN, line }); break;
-            case ')': tokens.pushBack({Token::RIGHT_PAREN, line }); break;
-            case '{': tokens.pushBack({Token::LEFT_BRACE, line}); break;
-            case '}': tokens.pushBack({Token::RIGHT_BRACE, line}); break;
-            case ',': tokens.pushBack({Token::COMMA, line}); break;
-            case '.': tokens.pushBack({Token::DOT, line}); break;
-            case '-': tokens.pushBack({Token::MINUS, line}); break;
-            case '+': tokens.pushBack({Token::PLUS, line}); break;
-            case ';': tokens.pushBack({Token::SEMICOLON, line}); break;
-            //case '/': tokens.pushBack({Token::SLASH}); break; // needs special case (comments)
-            case '*': tokens.pushBack({Token::STAR, line}); break;
+            case ' ':
+            case '\t':
+            case '\n': break;
 
-            case '!': tokens.pushBack({cnext == '=' ? (++idx, Token::BANG_EQUAL) : Token::BANG,
-                              line});
-                      break;
+            // single-character
 
-            case '=': tokens.pushBack({cnext == '=' ? (++idx, Token::EQUAL_EQUAL) : Token::EQUAL,
-                              line});
-                      break;
-            case '>': tokens.pushBack({cnext == '=' ? (++idx, Token::GREATER_EQUAL) :
-                              Token::GREATER, line});
-                      break;
+            case '(': lexer.addToken(TokenType::LEFT_PAREN); break;
+            case ')': lexer.addToken(TokenType::RIGHT_PAREN); break;
+            case '{': lexer.addToken(TokenType::LEFT_BRACE); break;
+            case '}': lexer.addToken(TokenType::RIGHT_BRACE); break;
+            case ',': lexer.addToken(TokenType::COMMA); break;
+            case '.': lexer.addToken(TokenType::DOT); break;
+            case '-': lexer.addToken(TokenType::MINUS); break;
+            case '+': lexer.addToken(TokenType::PLUS); break;
+            case ';': lexer.addToken(TokenType::SEMICOLON); break;
+            //case '/': // needs special case (comments)
+            case '*': lexer.addToken(TokenType::STAR); break;
 
-            case '<': tokens.pushBack({cnext == '=' ? (++idx, Token::LESS_EQUAL) : Token::LESS,
-                              line});
-                      break;
+            // one or two character
+
+            case '!':
+            {
+                lexer.addToken(lexer.match('=') ? TokenType::BANG_EQUAL : TokenType::BANG);
+                break;
+            }
+            case '=':
+            {
+                lexer.addToken(lexer.match('=') ? TokenType::EQUAL_EQUAL : TokenType::EQUAL);
+                break;
+            }
+            case '>':
+            {
+                lexer.addToken(lexer.match('=') ? TokenType::GREATER_EQUAL : TokenType::GREATER);
+                break;
+            }
+            case '<':
+            {
+                lexer.addToken(lexer.match('=') ? TokenType::LESS_EQUAL : TokenType::LESS);
+                break;
+            }
+
+            // other
 
             case '/':
             {
-                if(cnext != '/')
-                    tokens.pushBack({Token::SLASH, line});
+                if(!lexer.match('/'))
+                    lexer.addToken(TokenType::SLASH);
 
                 else
                 {
-                    while(++idx, str[idx] != '\0' && str[idx] != '\n')
+                    while(!lexer.end() && lexer.advance() != '\n')
                         ;
-
-                    ++line;
                 }
 
                 break;
             }
 
-            case ' ':
-            case '\t':
-            break;
-
-            case '\n': ++line; break;
-
             case '"':
             {
-                const int begin = idx + 1;
-                const int beginLine = line;
+                const char* const literalBegin = begin + 1;
 
-                while(++idx, str[idx] != '\0' && str[idx] != '"')
-                {
-                    if(str[idx] == '\n')
-                        ++line;
-                }
+                while(!lexer.end() && lexer.advance() != '"')
+                    ;
 
-
-                if(str[idx] != '"')
+                if(lexer.end())
                 {
                     error = true;
-                    printf("%d: unterminated string literal\n", beginLine);
-                    break;
+                    printError(lexer.tokenCol, lexer.tokenLine, "unterminated string literal");
                 }
                 else
-                {
-                    Token token;
-                    token.type = Token::STRING;
-                    token.line = beginLine;
-                    token.str.ptr = &str[begin];
-                    token.str.len = idx - begin;
-                    tokens.pushBack(token);
-                    break;
-                }
+                    // "" are trimmed
+                    lexer.addToken(TokenType::STRING, literalBegin, lexer.pos() - literalBegin);
+
+                break;
             }
 
             default:
             {
-                Token token;
-                token.line = line;
-
                 if(isDigit(c))
                 {
-                    const int begin = idx;
+                    while(!lexer.end() && isDigit(lexer.peek()))
+                        lexer.advance();
 
-                    while(++idx, isDigit(str[idx]))
-                        ;
+                    if(lexer.peek() == '.' && isDigit(lexer.peekNext()))
+                        lexer.advance();
 
-                    if( str[idx] == '.' && isDigit(str[idx + 1]) )
-                        ++idx;
+                    while(!lexer.end() && isDigit(lexer.peek()))
+                        lexer.advance();
 
-                    while(isDigit(str[idx]))
-                        ++idx;
+                    const int len = min(int(lexer.pos() - begin + 1),
+                                        int(sizeof(_context.scratchBuf - 1)));
 
-                    char buf[256];
-                    const int len = idx - begin;
-                    assert( len < int(sizeof(buf)) );
-
-                    memcpy(buf, &str[begin], len);
-                    buf[len + 1] = '\0';
-
-                    token.number = atof(buf);
-                    token.type = Token::NUMBER;
-
-                    --idx;
+                    memcpy(_context.scratchBuf, begin, len);
+                    _context.scratchBuf[len + 1] = '\0';
+                    lexer.addToken(TokenType::NUMBER, atof(_context.scratchBuf));
                 }
                 else if(isAlphanumeric(c))
                 {
-                    const int begin = idx;
+                    while(!lexer.end() && isAlphanumeric(lexer.peek()))
+                        lexer.advance();
 
-                    while(++idx, isAlphanumeric(str[idx]))
-                        ;
-
-                    const int len = idx - begin;
-                    bool match = false;
+                    const int len = lexer.pos() - begin + 1;
+                    bool isKeyword = false;
+                    TokenType tokenType;
 
                     for(const Keyword& keyword: _keywords)
                     {
-                        const int keywordLen = strlen(keyword.str);
-                        
-                        if(strncmp(&str[begin], keyword.str, len > keywordLen ? keywordLen: len)
-                                == 0)
+                        if(strncmp(begin, keyword.str, min(len, int(strlen(keyword.str)))) == 0)
                         {
-                            token.type = keyword.tokenType;
-                            match = true;
+                            isKeyword = true;
+                            tokenType = keyword.tokenType;
                             break;
                         }
                     }
 
-                    if(!match)
-                    {
-                        token.type = Token::IDENTIFIER;
-                        token.str.ptr = &str[begin];
-                        token.str.len = idx - begin;
-                    }
-
-                    --idx;
+                    if(!isKeyword)
+                        lexer.addToken(TokenType::IDENTIFIER, begin, lexer.pos() - begin + 1);
+                    else
+                        lexer.addToken(tokenType);
                 }
                 else
                 {
                     error = true;
-                    printf("%d: error: unexpected character '%c'\n", line, str[idx]);
-                    break;
+                    snprintf(_context.scratchBuf, getSize(_context.scratchBuf),
+                            "unexpected character '%c'", c);
+                    printError(lexer.col, lexer.line, _context.scratchBuf);
                 }
 
-                tokens.pushBack(token);
                 break;
             }
         }
-
-        ++idx;
     }
 
-    tokens.pushBack({Token::LOX_EOF, line});
-
+    tokens.pushBack({TokenType::LOX_EOF, lexer.col + 1, lexer.line});
     return !error;
+}
+
+bool evaluate(Value& value, const Expr& expr)
+{
+    (void)value;
+    (void)expr;
+    return false;
+}
+
+void print(const Value& value)
+{
+    (void)value;
 }
 
 int main()
 {
+    // @ remove extra whitespace from the end (better error reporting)
+    const char* const source = "2.666 * 3 + (1 + 8) - 5 / (2 + --6.5)";
+
     Array<Token> tokens;
-
-    const bool scanError = !scan(tokens, "-4 * ( 5 + 1) - 3 * 2 + 1");
-
-    Parser parser(tokens);
-
     Expr expr;
+    bool error = false;
 
-    const bool parseError = !parser.parse(expr);
+    error = scan(tokens, source) || error;
+    error = parse(expr, tokens) || error;
 
-    if(!scanError && !parseError)
-        interpret(expr);
+    if(!error)
+    {
+        Value value;
+
+        if(evaluate(value, expr))
+            print(value);
+    }
 
     return 0;
 }
