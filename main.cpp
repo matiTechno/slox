@@ -529,7 +529,7 @@ bool scan(Array<Token>& tokens, const char* const source)
                 while(!lexer.end() && lexer.advance() != '"')
                     ;
 
-                if(lexer.end())
+                if(lexer.end() && *lexer.pos() != '"')
                 {
                     error = true;
                     printError(lexer.tokenCol, lexer.tokenLine, "unterminated string literal");
@@ -693,7 +693,6 @@ bool evaluateBinary(Value& value, const Expr& expr)
     }
     else
     {
-
         if(valueLeft.type != valueRight.type)
         {
             printError(token.col, token.line,
@@ -724,29 +723,41 @@ bool evaluateBinary(Value& value, const Expr& expr)
                 return false;
             }
 
-            value.type = ValueType::NUMBER;
-
             if(token.type == TokenType::MINUS)
+            {
+                value.type = ValueType::NUMBER;
                 value.number = valueLeft.number - valueRight.number;
-
+            }
             else if(token.type == TokenType::STAR)
+            {
+                value.type = ValueType::NUMBER;
                 value.number = valueLeft.number * valueRight.number;
-
+            }
             else if(token.type == TokenType::SLASH)
+            {
+                value.type = ValueType::NUMBER;
                 value.number = valueLeft.number / valueRight.number;
-
+            }
             else if(token.type == TokenType::GREATER)
-                value.number = valueLeft.number > valueRight.number;
-
+            {
+                value.type = ValueType::BOOLEAN;
+                value.boolean = valueLeft.number > valueRight.number;
+            }
             else if(token.type == TokenType::GREATER_EQUAL)
-                value.number = valueLeft.number >= valueRight.number;
-
+            {
+                value.type = ValueType::BOOLEAN;
+                value.boolean = valueLeft.number >= valueRight.number;
+            }
             else if(token.type == TokenType::LESS)
-                value.number = valueLeft.number < valueRight.number;
-
+            {
+                value.type = ValueType::BOOLEAN;
+                value.boolean = valueLeft.number < valueRight.number;
+            }
             else if(token.type == TokenType::LESS_EQUAL)
-                value.number = valueLeft.number <= valueRight.number;
-
+            {
+                value.type = ValueType::BOOLEAN;
+                value.boolean = valueLeft.number <= valueRight.number;
+            }
             else
                 assert(false);
         }
