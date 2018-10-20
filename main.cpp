@@ -51,7 +51,7 @@ static Keyword _keywords[] = {
     {"false", TokenType::FALSE}, {"fun", TokenType::FUN}, {"for", TokenType::FOR},
     {"if", TokenType::IF}, {"nil", TokenType::NIL}, {"or", TokenType::OR},
     {"print", TokenType::PRINT}, {"return", TokenType::RETURN}, {"super", TokenType::SUPER},
-    {"this", TokenType::THIS}, {"ver", TokenType::VAR}, {"while", TokenType::WHILE}
+    {"this", TokenType::THIS}, {"var", TokenType::VAR}, {"while", TokenType::WHILE}
 };
 
 struct Token
@@ -96,7 +96,7 @@ enum class ExprType
 {
     BINARY,
     GROUPING,
-    LITERAL,
+    PRIMARY,
     UNARY
 };
 
@@ -124,7 +124,10 @@ struct Expr
             Token operatorToken;
         } unary;
 
-        Token literalToken;
+        struct
+        {
+            Token token;
+        } primary;
     };
 };
 
@@ -134,15 +137,55 @@ struct Line
     int len;
 };
 
+struct Var
+{
+    const char* name;
+    Value value;
+};
+
 struct
 {
     Array<Line> lines;
     Array<Expr> expressions;
     char scratchBuf[10000];
+    Array<Var> variables;
 
-    // temp storage for string values
+    // @TODO!!!
+    // @temporary, storage for string values
     char byteArray[10000];
     int end = 0;
+
+    Var* findVar(const char* const name, const int len)
+    {
+        for(Var& var: variables)
+        {
+            if(strncmp(var.name, name, len) == 0)
+                return &var;
+        }
+        return nullptr;
+    }
+
+    void addVar(const char* const name, const int len, Value value)
+    {
+        // we allow global variable redefinition
+        Var* var = findVar(name, len);
+        if(var)
+            var->value = value;
+        else
+            variables.pushBack( {addString(name, len), value} );
+    }
+
+    bool getVarValue(Value& value, const char* const name, int len)
+    {
+        Var* var = findVar(name, len);
+        if(var)
+        {
+            value = var->value;
+            return true;
+        }
+
+        return false;
+    }
 
     int addExpr(const Expr expr)
     {
@@ -215,10 +258,10 @@ bool primary(Expr& outputExpr, const Token** const token)
     const TokenType type = (**token).type;
 
     if(type == TokenType::FALSE || type == TokenType::TRUE || type == TokenType::NIL ||
-       type == TokenType::NUMBER || type == TokenType::STRING)
+       type == TokenType::NUMBER || type == TokenType::STRING || type == TokenType::IDENTIFIER)
     {
-        outputExpr.type = ExprType::LITERAL;
-        outputExpr.literalToken = **token;
+        outputExpr.type = ExprType::PRIMARY;
+        outputExpr.primary.token = **token;
         ++(*token);
         return true;
     }
@@ -585,7 +628,10 @@ bool scan(Array<Token>& tokens, const char* const source)
 
                     for(const Keyword& keyword: _keywords)
                     {
-                        if(strncmp(begin, keyword.str, min(len, int(strlen(keyword.str)))) == 0)
+                        if(int(strlen(keyword.str)) != len)
+                            continue;
+
+                        if(strncmp(begin, keyword.str, len) == 0)
                         {
                             isKeyword = true;
                             tokenType = keyword.tokenType;
@@ -642,9 +688,9 @@ bool isEqual(const Value& l, const Value& r)
     return false;
 }
 
-bool evaluateLiteral(Value& value, const Expr& expr)
+bool evaluatePrimary(Value& value, const Expr& expr)
 {
-    const Token& token = expr.literalToken;
+    const Token& token = expr.primary.token;
 
     switch(token.type)
     {
@@ -675,6 +721,15 @@ bool evaluateLiteral(Value& value, const Expr& expr)
         {
             value.type = ValueType::STRING;
             value.string = _context.addString(token.string.begin, token.string.len);
+            break;
+        }
+        case TokenType::IDENTIFIER:
+        {
+            if(!_context.getVarValue(value, token.string.begin, token.string.len))
+            {
+                printError(ErrorType::RUNTIME, token.col, token.line, "unknown identifier");
+                return false;
+            }
             break;
         }
 
@@ -819,7 +874,7 @@ bool evaluate(Value& value, const Expr& expr)
 {
     switch(expr.type)
     {
-        case ExprType::LITERAL: return evaluateLiteral(value, expr);
+        case ExprType::PRIMARY: return evaluatePrimary(value, expr);
         case ExprType::UNARY: return evaluateUnary(value, expr);
         case ExprType::GROUPING: return evaluateGrouping(value, expr);
         case ExprType::BINARY: return evaluateBinary(value, expr);
@@ -848,13 +903,15 @@ bool print(const Expr& expr)
 enum class StmtType
 {
     EXPRESSION,
-    PRINT
+    PRINT,
+    VAR_DECL
 };
 
 struct Stmt
 {
     StmtType type;
     int idxExpr;
+    Token identifierToken;
 };
 
 bool statement(Stmt& stmt, const Token** const token)
@@ -883,6 +940,53 @@ bool statement(Stmt& stmt, const Token** const token)
     return true;
 }
 
+bool declaration(Stmt& stmt, const Token** const token)
+{
+    if((**token).type == TokenType::VAR)
+    {
+        ++(*token);
+
+        // @ we should have some helper functions for these
+        if((**token).type != TokenType::IDENTIFIER)
+        {
+            printError(ErrorType::PARSER, (**token).col, (**token).line,
+                    "expected variable name ");
+            return false;
+        }
+
+        stmt.identifierToken = **token;
+        ++(*token);
+
+        if((**token).type == TokenType::EQUAL)
+        {
+            ++(*token);
+
+            Expr expr;
+            if(!expression(expr, token)) return false;
+            stmt.idxExpr = _context.addExpr(expr);
+        }
+        else // init to nil
+        {
+            Expr expr;
+            expr.type = ExprType::PRIMARY;
+            expr.primary.token.type = TokenType::NIL;
+            stmt.idxExpr = _context.addExpr(expr);
+        }
+
+        if((**token).type != TokenType::SEMICOLON)
+        {
+            printError(ErrorType::PARSER, (**token).col, (**token).line, "expected ';'");
+            return false;
+        }
+
+        stmt.type = StmtType::VAR_DECL;
+        ++(*token);
+        return true;
+    }
+    else
+        return statement(stmt, token);
+}
+
 bool parse(Array<Stmt>& statements, const Array<Token>& tokens)
 {
     bool error = false;
@@ -893,7 +997,7 @@ bool parse(Array<Stmt>& statements, const Array<Token>& tokens)
     {
         statements.pushBack({});
 
-        if(!statement(statements.back(), &token))
+        if(!declaration(statements.back(), &token))
         {
             error = true;
 
@@ -928,17 +1032,31 @@ void execute(Array<Stmt>& statements)
 {
     for(Stmt& stmt: statements)
     {
-        if(stmt.type == StmtType::EXPRESSION)
+        switch(stmt.type)
         {
-            Value value;
+            case StmtType::EXPRESSION:
+            {
+                Value value;
+                if(!evaluate(value, _context.expressions[stmt.idxExpr])) return;
+                break;
+            }
 
-            if(!evaluate(value, _context.expressions[stmt.idxExpr]))
+            case StmtType::PRINT:
+            {
+                if(!print(_context.expressions[stmt.idxExpr])) return;
                 break;
-        }
-        else
-        {
-            if(!print(_context.expressions[stmt.idxExpr]))
+            }
+
+            case StmtType::VAR_DECL:
+            {
+                Value value;
+                if(!evaluate(value, _context.expressions[stmt.idxExpr])) return;
+                const Token& token = stmt.identifierToken;
+                _context.addVar(token.string.begin, token.string.len, value);
                 break;
+            }
+
+            default: assert(false);
         }
     }
 }
@@ -1036,6 +1154,7 @@ int main(int argc, const char* const * const argv)
     statements.reserve(100);
     _context.lines.reserve(100);
     _context.expressions.reserve(1000);
+    _context.variables.reserve(30);
 
     for(;;)
     {

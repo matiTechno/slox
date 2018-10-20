@@ -1,6 +1,13 @@
 // this is a test script for super lox
+var r = 5;
+var k = 6;
+print r + k;
+var lolo = "lolo";
+var dodo = "dodo";
+print lolo + dodo;
 print (5 * 5.88 - 2) / 16 + 44 * (2 + --1);
 print "owsianka" + " jest cool";
 print 666 > 69;
 4 + 5;
 print nil;
+print lolo + " jest fajnym" + " kolesiem.";
