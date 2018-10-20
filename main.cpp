@@ -205,7 +205,7 @@ void printError(ErrorType errorType, int col, int line, const char* str)
         case ErrorType::RUNTIME: typeStr = "runtime"; break;
     }
 
-    printf("^\n%d:%d: {%s} %s\n", line, col, typeStr, str);
+    printf("^\n%d:%d: {%s} %s\n\n", line, col, typeStr, str);
 }
 
 bool expression(Expr& expr, const Token** const token);
@@ -346,7 +346,9 @@ bool binary(Expr& expr, const Token** const token, BinaryType binaryType)
         else
         { if(!unary(exprRight, token)) return false;}
 
-        expr.binary.idxExprLeft = _context.addExpr(expr); // add expr to vector before modifying it
+        // add expr to vector before modifying it
+        expr.binary.idxExprLeft = _context.addExpr(expr);
+
         expr.type = ExprType::BINARY;
         expr.binary.idxExprRight = _context.addExpr(exprRight);
         expr.binary.operatorToken = operatorToken;
@@ -957,7 +959,9 @@ void trimEndWhitespace(Array<char>& source)
 
 void keyboardInterrupt(int)
 {
-    printf("\n>>> use Ctrl-D (i.e. EOF) to exit\n");
+    // idk, it's probably not wise to use it here
+    printf("\nuse Ctrl-D (i.e. EOF) to exit\n>>> ");
+    fflush(stdout);
 }
 
 int main(int argc, const char* const * const argv)
@@ -1054,7 +1058,7 @@ int main(int argc, const char* const * const argv)
                         repl = false;
 
                         if(isTerminal)
-                            printf("bye\n");
+                            printf("\nbye\n");
                     }
 
                     break;
