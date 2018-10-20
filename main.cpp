@@ -959,7 +959,7 @@ void trimEndWhitespace(Array<char>& source)
 
 void keyboardInterrupt(int)
 {
-    // idk, it's probably not wise to use it here
+    // @
     printf("\nuse Ctrl-D (i.e. EOF) to exit\n>>> ");
     fflush(stdout);
 }
@@ -972,11 +972,10 @@ int main(int argc, const char* const * const argv)
         return 0;
     }
 
-    bool repl = argc == 1;
-
     Array<char> source;
+    const bool repl = (argc == 1) && isatty(fileno(stdin));
 
-    if(!repl)
+    if(argc == 2) // file input
     {
         FILE* file = fopen(argv[1], "r");
         if(!file)
@@ -1010,32 +1009,39 @@ int main(int argc, const char* const * const argv)
         source.pushBack('\0');
         trimEndWhitespace(source);
     }
+    else if(!repl) // pipe input
+    {
+        // it is probably not the fastest way to get the data from stdin
+        source.reserve(500);
+
+        char c;
+        while( (c = getchar()) != EOF)
+            source.pushBack(c);
+
+        source.pushBack('\0');
+        trimEndWhitespace(source);
+    }
+    else // repl session
+    {
+        source.reserve(500);
+        signal(SIGINT, keyboardInterrupt);
+        printf("super LOX - implementation of craftinginterpreters.com LOX language\n");
+    }
 
     Array<Token> tokens;
     Array<Stmt> statements;
 
     // allocate some memory upfront
-    if(repl) source.reserve(500);
     tokens.reserve(1000);
     statements.reserve(100);
     _context.lines.reserve(100);
     _context.expressions.reserve(1000);
 
-    // @ if input is a pipe read it upfront as we do with files?
-    const bool isTerminal = isatty(fileno(stdin)); // if(repl && !isTerminal) == stdin is a pipe
-
-    if(repl && isTerminal)
-    {
-        signal(SIGINT, keyboardInterrupt);
-        printf("super LOX - implementation of craftinginterpreters.com LOX language\n");
-    }
-
     for(;;)
     {
         if(repl)
         {
-            if(isTerminal)
-                printf(">>> ");
+            printf(">>> ");
 
             source.clear();
             tokens.clear();
@@ -1048,23 +1054,24 @@ int main(int argc, const char* const * const argv)
             {
                 const int c = getchar();
 
-                if( (c == '\n' && isTerminal) || c == EOF)
+                if(c == '\n')
                 {
                     source.pushBack('\0');
                     trimEndWhitespace(source);
-
-                    if(c == EOF)
-                    {
-                        repl = false;
-
-                        if(isTerminal)
-                            printf("\nbye\n");
-                    }
-
                     break;
                 }
-
-                source.pushBack(c);
+                else if(c == EOF)
+                {
+                    if(source.empty())
+                    {
+                        printf("\nbye\n");
+                        return 0;
+                    }
+                    else // ignore EOF
+                        clearerr(stdin);
+                }
+                else
+                    source.pushBack(c);
             }
         }
 
