@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h> // check if stdin is terminal or pipe
+#include <signal.h> // keyboard interrupt
 
 bool isDigit(const char c) {return c >= '0' && c <= '9';}
 
@@ -180,14 +182,30 @@ struct
 
 } static _context;
 
-void printError(int col, int line, const char* str)
+enum class ErrorType
 {
-    printf("%.*s\n", _context.lines[line - 1].len, _context.lines[line - 1].begin);
+    LEXER,
+    PARSER,
+    RUNTIME
+};
+
+void printError(ErrorType errorType, int col, int line, const char* str)
+{
+    printf("\n%.*s\n", _context.lines[line - 1].len, _context.lines[line - 1].begin);
 
     for(int i = 0; i < col - 1; ++i)
         putchar('-');
 
-    printf("^\n%d:%d: %s\n", line, col, str);
+    const char* typeStr;
+
+    switch(errorType)
+    {
+        case ErrorType::LEXER: typeStr = "lexer"; break;
+        case ErrorType::PARSER: typeStr = "parser"; break;
+        case ErrorType::RUNTIME: typeStr = "runtime"; break;
+    }
+
+    printf("^\n%d:%d: {%s} %s\n", line, col, typeStr, str);
 }
 
 bool expression(Expr& expr, const Token** const token);
@@ -219,12 +237,13 @@ bool primary(Expr& outputExpr, const Token** const token)
         }
         else
         {
-            printError((**token).col, (**token).line, "expected ')' after expression");
+            printError(ErrorType::PARSER, (**token).col, (**token).line,
+                    "expected ')' after expression");
             return false;
         }
     }
 
-    printError((**token).col, (**token).line, "expected expression");
+    printError(ErrorType::PARSER, (**token).col, (**token).line, "expected expression");
     return false;
 }
 
@@ -341,13 +360,6 @@ bool expression(Expr& expr, const Token** const token)
     return binary(expr, token, BinaryType::EQUALITY);
 }
 
-// @ remove old expressions from _context.expressions and clear _context.byteArray
-bool parse(Expr& expr, const Array<Token>& tokens)
-{
-    const Token* token = tokens.begin();
-    return expression(expr, &token);
-}
-
 struct Lexer
 {
     Lexer(Array<Token>& tokens, const char* source): it(source), tokens(tokens) {}
@@ -398,7 +410,7 @@ struct Lexer
         return true;
     }
 
-    const char* pos() const {return it - 1;}
+    const char* pos() const {return it - 1;} // @ in fact it is a previous position
     char peek() const {return *it;}
     char peekNext() const {return end() ? *it : *(it + 1);}
 
@@ -429,7 +441,6 @@ private:
 // scanning and lexing mean the same thing
 bool scan(Array<Token>& tokens, const char* const source)
 {
-    _context.lines.clear();
     Lexer lexer(tokens, source);
 
     // fill _context.lines
@@ -532,7 +543,8 @@ bool scan(Array<Token>& tokens, const char* const source)
                 if(lexer.end() && *lexer.pos() != '"')
                 {
                     error = true;
-                    printError(lexer.tokenCol, lexer.tokenLine, "unterminated string literal");
+                    printError(ErrorType::LEXER, lexer.tokenCol, lexer.tokenLine,
+                            "unterminated string literal");
                 }
                 else
                     // "" are trimmed
@@ -554,9 +566,8 @@ bool scan(Array<Token>& tokens, const char* const source)
                     while(!lexer.end() && isDigit(lexer.peek()))
                         lexer.advance();
 
-                    const int len = min(int(lexer.pos() - begin + 1),
-                                        int(sizeof(_context.scratchBuf) - 1));
-
+                    const int len = lexer.pos() - begin + 1;
+                    assert(getSize(_context.scratchBuf) >= len + 1);
                     memcpy(_context.scratchBuf, begin, len);
                     _context.scratchBuf[len] = '\0';
                     lexer.addToken(TokenType::NUMBER, atof(_context.scratchBuf));
@@ -590,7 +601,7 @@ bool scan(Array<Token>& tokens, const char* const source)
                     error = true;
                     snprintf(_context.scratchBuf, getSize(_context.scratchBuf),
                             "unexpected character '%c'", c);
-                    printError(lexer.col, lexer.line, _context.scratchBuf);
+                    printError(ErrorType::LEXER, lexer.col, lexer.line, _context.scratchBuf);
                 }
 
                 break;
@@ -695,7 +706,7 @@ bool evaluateBinary(Value& value, const Expr& expr)
     {
         if(valueLeft.type != valueRight.type)
         {
-            printError(token.col, token.line,
+            printError(ErrorType::RUNTIME, token.col, token.line,
                         "this operator only works with values of the same type");
             return false;
         }
@@ -710,7 +721,7 @@ bool evaluateBinary(Value& value, const Expr& expr)
                 value.string = _context.addString(valueLeft.string, valueRight.string);
             else
             {
-                printError(token.col, token.line,
+                printError(ErrorType::RUNTIME, token.col, token.line,
                            "operator '+' only works with strings and numbers");
                 return false;
             }
@@ -719,7 +730,8 @@ bool evaluateBinary(Value& value, const Expr& expr)
         {
             if(valueLeft.type != ValueType::NUMBER)
             {
-                printError(token.col, token.line, "this operator only works with numbers");
+                printError(ErrorType::RUNTIME, token.col, token.line,
+                        "this operator only works with numbers");
                 return false;
             }
 
@@ -777,7 +789,8 @@ bool evaluateUnary(Value& value, const Expr& expr)
     {
         if(valueRight.type != ValueType::NUMBER)
         {
-            printError(token.col, token.line, "'-' unary operator works only with numbers");
+            printError(ErrorType::RUNTIME, token.col, token.line,
+                    "'-' unary operator works only with numbers");
             return false;
         }
 
@@ -812,37 +825,254 @@ bool evaluate(Value& value, const Expr& expr)
     assert(false);
 }
 
-void print(const Value& value)
+bool print(const Expr& expr)
 {
+    Value value;
+    if(!evaluate(value, expr)) return false;
+
     switch(value.type)
     {
-        case ValueType::BOOLEAN: printf("> %s\n", value.boolean ? "true" : "false"); break;
-        case ValueType::NIL: printf("> nil\n"); break;
-        case ValueType::STRING: printf("> \"%s\"\n", value.string); break;
-        case ValueType::NUMBER: printf("> %f\n", value.number); break;
+        case ValueType::BOOLEAN: printf("%s\n", value.boolean ? "true" : "false"); break;
+        case ValueType::NIL: printf("nil\n"); break;
+        case ValueType::STRING: printf("\"%s\"\n", value.string); break;
+        case ValueType::NUMBER: printf("%f\n", value.number); break;
 
         default: assert(false);
     }
+
+    return true;
 }
 
-int main()
+enum class StmtType
 {
-    // @ remove extra whitespace from the end (better error reporting)
-    const char* const source = "2.666 * 3 + (1 + 8) - 5 / (2 + --6.5)";
+    EXPRESSION,
+    PRINT
+};
 
-    Array<Token> tokens;
+struct Stmt
+{
+    StmtType type;
+    int idxExpr;
+};
+
+bool statement(Stmt& stmt, const Token** const token)
+{
+    if((**token).type == TokenType::PRINT)
+    {
+        ++(*token);
+        stmt.type = StmtType::PRINT;
+    }
+    else
+        stmt.type = StmtType::EXPRESSION;
+
     Expr expr;
+    if(!expression(expr, token)) return false;
+
+    if((**token).type != TokenType::SEMICOLON)
+    {
+        printError(ErrorType::PARSER, (**token).col, (**token).line, "expected ';'");
+        return false;
+    }
+
+    ++(*token);
+
+    stmt.idxExpr = _context.addExpr(expr);
+
+    return true;
+}
+
+bool parse(Array<Stmt>& statements, const Array<Token>& tokens)
+{
     bool error = false;
 
-    error = !scan(tokens, source) || error;
-    error = !parse(expr, tokens) || error;
+    const Token* token = tokens.begin();
 
-    if(!error)
+    while(token->type != TokenType::LOX_EOF)
     {
-        Value value;
+        statements.pushBack({});
 
-        if(evaluate(value, expr))
-            print(value);
+        if(!statement(statements.back(), &token))
+        {
+            error = true;
+
+            // go to the next statement and continue parsing (it's not always correct)
+            while(token->type != TokenType::LOX_EOF)
+            {
+                ++token;
+
+                if((token - 1)->type == TokenType::SEMICOLON)
+                    break;
+
+                switch(token->type)
+                {
+                    case TokenType::CLASS:
+                    case TokenType::FUN:
+                    case TokenType::VAR:
+                    case TokenType::FOR:
+                    case TokenType::IF:
+                    case TokenType::WHILE:
+                    case TokenType::PRINT:
+                    case TokenType::RETURN: goto end;
+                }
+            }
+            end:;
+        }
+    }
+
+    return !error;
+}
+
+void execute(Array<Stmt>& statements)
+{
+    for(Stmt& stmt: statements)
+    {
+        if(stmt.type == StmtType::EXPRESSION)
+        {
+            Value value;
+
+            if(!evaluate(value, _context.expressions[stmt.idxExpr]))
+                break;
+        }
+        else
+        {
+            if(!print(_context.expressions[stmt.idxExpr]))
+                break;
+        }
+    }
+}
+
+void trimEndWhitespace(Array<char>& source)
+{
+    assert(source.back() == '\0');
+
+    // omit '\0'
+    for(char* it = source.end() - 2; it >= source.begin(); --it)
+    {
+        if(*it == ' ' || *it == '\n' || *it == '\t')
+            *it = '\0';
+        else
+            break;
+    }
+}
+
+void keyboardInterrupt(int)
+{
+    printf("\n>>> use Ctrl-D (i.e. EOF) to exit\n");
+}
+
+int main(int argc, const char* const * const argv)
+{
+    if(argc > 2)
+    {
+        printf("usage:\nslox\nslox <source>\n");
+        return 0;
+    }
+
+    bool repl = argc == 1;
+
+    Array<char> source;
+
+    if(!repl)
+    {
+        FILE* file = fopen(argv[1], "r");
+        if(!file)
+        {
+            printf("error: could not open '%s'\n", argv[1]);
+            return 0;
+        }
+
+        if(fseek(file, 0, SEEK_END) != 0)
+        {
+            perror("fseek()");
+            fclose(file);
+            return 0;
+        }
+
+        const int size = ftell(file);
+
+        if(size == EOF)
+        {
+            perror("ftell()");
+            fclose(file);
+            return 0;
+        }
+
+        rewind(file);
+        source.resize(size);
+        // might read less than size on windows - e.g. \r\n to \n conversion
+        // to match ftell() we have to open the file in binary mode
+        fread(source.data(), 1, size, file);
+        fclose(file);
+        source.pushBack('\0');
+        trimEndWhitespace(source);
+    }
+
+    Array<Token> tokens;
+    Array<Stmt> statements;
+
+    // allocate some memory upfront
+    if(repl) source.reserve(500);
+    tokens.reserve(1000);
+    statements.reserve(100);
+    _context.lines.reserve(100);
+    _context.expressions.reserve(1000);
+
+    // @ if input is a pipe read it upfront as we do with files?
+    const bool isTerminal = isatty(fileno(stdin)); // if(repl && !isTerminal) == stdin is a pipe
+
+    if(repl && isTerminal)
+    {
+        signal(SIGINT, keyboardInterrupt);
+        printf("super LOX - implementation of craftinginterpreters.com LOX language\n");
+    }
+
+    for(;;)
+    {
+        if(repl)
+        {
+            if(isTerminal)
+                printf(">>> ");
+
+            source.clear();
+            tokens.clear();
+            statements.clear();
+            _context.lines.clear();
+            _context.expressions.clear();
+            _context.end = 0;
+
+            for(;;)
+            {
+                const int c = getchar();
+
+                if( (c == '\n' && isTerminal) || c == EOF)
+                {
+                    source.pushBack('\0');
+                    trimEndWhitespace(source);
+
+                    if(c == EOF)
+                    {
+                        repl = false;
+
+                        if(isTerminal)
+                            printf("bye\n");
+                    }
+
+                    break;
+                }
+
+                source.pushBack(c);
+            }
+        }
+
+        bool error = false;
+        error = !scan(tokens, source.data()) || error;
+        error = !parse(statements, tokens) || error;
+
+        if(!error)
+            execute(statements);
+
+        if(!repl)
+            break;
     }
 
     return 0;
