@@ -1,7 +1,60 @@
 // this is a test script for super lox
 
+var y = 8;
+if(6 < 8)
+{
+    print "should print 12:";
+    var y = y + 4;
+    print y;
+}
+else
+{
+    y = 10;
+}
+
+print "should print 8:";
+print y;
+
+if(false)
+    print "should not print this";
+else
+    print "should print this";
+
+if ( true)
+{
+    y = 15;
+    print "setting y to 15 in if body";
+}
+else y = 3;
+
+print "should print 15";
+print y;
+
+
+if(true)
+{
+    var y = y - 5;
+
+    if(true)
+    {
+        var z = 2;
+        var y = y + z;
+        print "should print 12";
+        print y;
+    }
+}
+
+if(true)
+    if(false)
+        print "should not print";
+    else
+        print "should print because it is inner else";
+
+print "done with testing if else; now we have some things from the past";
+print "................................................................";
 {
 }
+
 
 var a = 5;
 print a;

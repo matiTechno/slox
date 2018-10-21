@@ -209,17 +209,14 @@ struct Context
         return true;
     }
 
-    bool getVarValue(Value& value, const char* const name, int len)
+    Var* getVar(const char* const name, int len)
     {
         for(int i = variables.size() - 1; i >= 0; --i)
         {
             if(strncmp(variables[i].name, name, len) == 0)
-            {
-                value = variables[i].value;
-                return true;
-            }
+                return &variables[i];
         }
-        return false;
+        return nullptr;
     }
 
     int addExpr(const Expr expr)
@@ -790,11 +787,13 @@ bool evaluatePrimary(Value& value, const Expr& expr)
         }
         case TokenType::IDENTIFIER:
         {
-            if(!_context.getVarValue(value, token.string.begin, token.string.len))
+            const Var* var = _context.getVar(token.string.begin, token.string.len);
+            if(!var)
             {
                 printError(ErrorType::RUNTIME, token.col, token.line, "unknown identifier");
                 return false;
             }
+            value = var->value;
             break;
         }
 
@@ -817,8 +816,10 @@ bool evaluateBinary(Value& value, const Expr& expr)
     if(token.type == TokenType::EQUAL)
     {
         const Token& varToken = _context.expressions[expr.binary.idxExprLeft].primary.token;
-        _context.addVar(varToken.string.begin, varToken.string.len, valueRight);
-        value = valueRight;
+        Var* var = _context.getVar(varToken.string.begin, varToken.string.len);
+        assert(var); // we know it's valid - evaluate(valueLeft) returned true
+        var->value = valueRight;
+        value = var->value;
     }
     else if(token.type == TokenType::BANG_EQUAL)
     {
@@ -977,7 +978,8 @@ enum class StmtType
     PRINT,
     VAR_DECL,
     BLOCK_START,
-    BLOCK_END
+    BLOCK_END,
+    IF_STMT
 };
 
 struct Stmt
@@ -1001,62 +1003,22 @@ struct Stmt
             Token identifierToken;
             int idxExpr;
         } varDecl;
+
+        struct
+        {
+            int idxExpr;
+            int count;
+            int elseCount;
+        } ifStmt;
     };
 };
 
-bool statement(Array<Stmt>& statements, const Token** const token);
+bool declaration(Array<Stmt>& statements, const Token** const token);
 
-// @@@ maybe we can simplify this; move statement() body to parse() and
-// rename statementImpl() to statement()
-// pass single reference instead of array
-bool statementImpl(Array<Stmt>& statements, const Token** const token)
+bool statement(Array<Stmt>& statements, const Token** const token)
 {
     switch((**token).type)
     {
-        case TokenType::VAR:
-        {
-            ++(*token);
-
-            // @ we should have some helper functions for these
-            if((**token).type != TokenType::IDENTIFIER)
-            {
-                printError(ErrorType::PARSER, (**token).col, (**token).line,
-                        "expected variable name ");
-                return false;
-            }
-
-            Stmt stmt;
-            stmt.varDecl.identifierToken = **token;
-            ++(*token);
-
-            if((**token).type == TokenType::EQUAL)
-            {
-                ++(*token);
-
-                Expr expr;
-                if(!expression(expr, token)) return false;
-                stmt.varDecl.idxExpr = _context.addExpr(expr);
-            }
-            else // init to nil
-            {
-                Expr expr;
-                expr.type = ExprType::PRIMARY;
-                expr.primary.token.type = TokenType::NIL;
-                stmt.varDecl.idxExpr = _context.addExpr(expr);
-            }
-
-            if((**token).type != TokenType::SEMICOLON)
-            {
-                printError(ErrorType::PARSER, (**token).col, (**token).line, "expected ';'");
-                return false;
-            }
-
-            ++(*token);
-            stmt.type = StmtType::VAR_DECL;
-            statements.pushBack(stmt);
-            break;
-        }
-
         case TokenType::PRINT:
         {
             ++(*token);
@@ -1066,7 +1028,8 @@ bool statementImpl(Array<Stmt>& statements, const Token** const token)
 
             if((**token).type != TokenType::SEMICOLON)
             {
-                printError(ErrorType::PARSER, (**token).col, (**token).line, "expected ';'");
+                printError(ErrorType::PARSER, (**token).col, (**token).line,
+                        "expected ';' after expression");
                 return false;
             }
 
@@ -1087,7 +1050,7 @@ bool statementImpl(Array<Stmt>& statements, const Token** const token)
             while((**token).type != TokenType::RIGHT_BRACE &&
                   (**token).type != TokenType::LOX_EOF)
             {
-                if(!statement(statements, token)) return false;
+                if(!declaration(statements, token)) return false;
             }
 
             if((**token).type != TokenType::RIGHT_BRACE)
@@ -1102,6 +1065,54 @@ bool statementImpl(Array<Stmt>& statements, const Token** const token)
             break;
         }
 
+        case TokenType::IF: // damn
+        {
+            ++(*token);
+
+            if((**token).type != TokenType::LEFT_PAREN)
+            {
+                printError(ErrorType::PARSER, (**token).col, (**token).line,
+                        "expected '(' after if");
+                return false;
+            }
+
+            ++(*token);
+
+            statements.pushBack({});
+            Stmt& stmt = statements.back();
+            stmt.type = StmtType::IF_STMT;
+
+            {
+                Expr expr;
+                if(!expression(expr, token)) return false;
+                stmt.ifStmt.idxExpr = _context.addExpr(expr);
+            }
+
+            if((**token).type != TokenType::RIGHT_PAREN)
+            {
+                printError(ErrorType::PARSER, (**token).col, (**token).line,
+                        "expected ')' after if condition");
+                return false;
+            }
+
+            ++(*token);
+
+            if(!statement(statements, token)) return false;
+
+            stmt.ifStmt.count = &statements.back() - &stmt;
+
+            if((**token).type != TokenType::ELSE)
+                stmt.ifStmt.elseCount = 0;
+            else
+            {
+                ++(*token);
+                if(!statement(statements, token)) return false;
+                stmt.ifStmt.elseCount = &statements.back() - (&stmt + stmt.ifStmt.count);
+            }
+
+            break;
+        }
+
         default:
         {
             Expr expr;
@@ -1109,8 +1120,17 @@ bool statementImpl(Array<Stmt>& statements, const Token** const token)
 
             if((**token).type != TokenType::SEMICOLON)
             {
-                printError(ErrorType::PARSER, (**token).col, (**token).line, "expected ';'");
+                printError(ErrorType::PARSER, (**token).col, (**token).line,
+                        "expected ';' after expression");
                 return false;
+            }
+
+            if(expr.type == ExprType::PRIMARY) // cool, we have warnings
+            {
+                printError(ErrorType::PARSER, expr.primary.token.col, expr.primary.token.line,
+                        "warning: statement has no effect");
+                // but even if has no effect don't throw it out
+                // it could hide runtime errors
             }
 
             ++(*token);
@@ -1125,36 +1145,56 @@ bool statementImpl(Array<Stmt>& statements, const Token** const token)
     return true;
 }
 
-bool statement(Array<Stmt>& statements, const Token** const token)
-{
-    if(!statementImpl(statements, token))
-    {
-        // go to the next statement
-        // it is not 100% accurate but that's fine
+// we keep declaration() and statement() separately because sometimes we
+// want a statement that is not a variable declaration
 
-        while((**token).type != TokenType::LOX_EOF)
+bool declaration(Array<Stmt>& statements, const Token** const token)
+{
+    if((**token).type == TokenType::VAR)
+    {
+        ++(*token);
+
+        // @ we should have some helper functions for these
+        if((**token).type != TokenType::IDENTIFIER)
+        {
+            printError(ErrorType::PARSER, (**token).col, (**token).line,
+                    "expected variable name ");
+            return false;
+        }
+
+        Stmt stmt;
+        stmt.varDecl.identifierToken = **token;
+        ++(*token);
+
+        if((**token).type == TokenType::EQUAL)
         {
             ++(*token);
 
-            if((*token - 1)->type == TokenType::SEMICOLON)
-                break;
-
-            switch((**token).type)
-            {
-                case TokenType::CLASS:
-                case TokenType::FUN:
-                case TokenType::VAR:
-                case TokenType::FOR:
-                case TokenType::IF:
-                case TokenType::WHILE:
-                case TokenType::PRINT:
-                case TokenType::RETURN: goto end;
-            }
+            Expr expr;
+            if(!expression(expr, token)) return false;
+            stmt.varDecl.idxExpr = _context.addExpr(expr);
         }
-        end:;
-        return false;
+        else // init to nil
+        {
+            Expr expr;
+            expr.type = ExprType::PRIMARY;
+            expr.primary.token.type = TokenType::NIL;
+            stmt.varDecl.idxExpr = _context.addExpr(expr);
+        }
+
+        if((**token).type != TokenType::SEMICOLON)
+        {
+            printError(ErrorType::PARSER, (**token).col, (**token).line, "expected ';'");
+            return false;
+        }
+
+        ++(*token);
+        stmt.type = StmtType::VAR_DECL;
+        statements.pushBack(stmt);
+        return true;
     }
-    return true;
+    else
+        return statement(statements, token);
 }
 
 bool parse(Array<Stmt>& statements, const Array<Token>& tokens)
@@ -1165,41 +1205,72 @@ bool parse(Array<Stmt>& statements, const Array<Token>& tokens)
     // continue parsing even if statement is incorrect so we can report many syntax errors
     // at once
     while(token->type != TokenType::LOX_EOF)
-        error = !statement(statements, &token) || error;
+    {
+        if(!declaration(statements, &token))
+        {
+            error = true;
+
+            // go to the next statement
+            // it is not 100% accurate but that's fine
+
+            while(token->type != TokenType::LOX_EOF)
+            {
+                ++token;
+
+                if((token - 1)->type == TokenType::SEMICOLON)
+                    break;
+
+                switch(token->type)
+                {
+                    case TokenType::CLASS:
+                    case TokenType::FUN:
+                    case TokenType::VAR:
+                    case TokenType::FOR:
+                    case TokenType::IF:
+                    case TokenType::WHILE:
+                    case TokenType::PRINT:
+                    case TokenType::RETURN: goto end;
+                }
+            }
+            end:;
+        }
+    }
 
     return !error;
 }
 
-void execute(const Array<Stmt>& statements)
+bool execute(const Stmt* const begin, const Stmt* const end)
 {
-    for(const Stmt& stmt: statements)
+    for(const Stmt* stmt = begin; stmt != end; ++stmt)
     {
-        switch(stmt.type)
+        assert(stmt < end);
+
+        switch(stmt->type)
         {
             case StmtType::EXPRESSION:
             {
                 Value value;
-                if(!evaluate(value, _context.expressions[stmt.expression.idxExpr])) return;
+                if(!evaluate(value, _context.expressions[stmt->expression.idxExpr])) return false;
                 break;
             }
 
             case StmtType::PRINT:
             {
-                if(!print(_context.expressions[stmt.print.idxExpr])) return;
+                if(!print(_context.expressions[stmt->print.idxExpr])) return false;
                 break;
             }
 
             case StmtType::VAR_DECL:
             {
                 Value value;
-                if(!evaluate(value, _context.expressions[stmt.varDecl.idxExpr])) return;
-                const Token& token = stmt.varDecl.identifierToken;
+                if(!evaluate(value, _context.expressions[stmt->varDecl.idxExpr])) return false;
+                const Token& token = stmt->varDecl.identifierToken;
 
                 if(!_context.addVar(token.string.begin, token.string.len, value))
                 {
                     printError(ErrorType::RUNTIME, token.col, token.line,
                             "only global variables can be redefined");
-                    return;
+                    return false;
                 }
 
                 break;
@@ -1216,9 +1287,30 @@ void execute(const Array<Stmt>& statements)
                 break;
             }
 
+            case StmtType::IF_STMT: // this is so fucking tricky; bad design
+            {
+                Value value;
+                const Stmt* lastGroupStmt = stmt + stmt->ifStmt.count + stmt->ifStmt.elseCount;
+
+                if(!evaluate(value, _context.expressions[stmt->ifStmt.idxExpr])) return false;
+
+                if(isTrue(value))
+                {
+                    if(!execute(stmt + 1, stmt + 1 + stmt->ifStmt.count)) return false;
+                }
+                else if(stmt->ifStmt.elseCount)
+                {
+                    if(!execute(stmt + stmt->ifStmt.count + 1, lastGroupStmt + 1)) return false;
+                }
+
+                stmt = lastGroupStmt;
+                break;
+            }
+
             default: assert(false);
         }
     }
+    return true;
 }
 
 void trimEndWhitespace(Array<char>& source)
@@ -1332,7 +1424,7 @@ int main(int argc, const char* const * const argv)
             // for e.g. variable names
             // _context.end = 0;
 
-            // remove all local variables (e.g. previous command failed execution deep
+            // remove all local variables (e.g. previous command failed executing deep
             // in the stack)
             while(_context.environments.size() > 1)
                 _context.popEnv();
@@ -1367,7 +1459,7 @@ int main(int argc, const char* const * const argv)
         error = !parse(statements, tokens) || error;
 
         if(!error)
-            execute(statements);
+            execute(statements.begin(), statements.end());
 
         if(!repl)
             break;
