@@ -1,4 +1,14 @@
 // this is a test script for super lox
+var doko = 5;
+var teto = "bako";
+var bebo = doko = teto;
+print bebo = teto;
+print bebo;
+print doko;
+print teto;
+print "---------";
+doko = teto;
+print doko + teto;
 var r = 5;
 var k = 6;
 print r + k;

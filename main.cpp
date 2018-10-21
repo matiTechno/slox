@@ -51,7 +51,8 @@ static Keyword _keywords[] = {
     {"false", TokenType::FALSE}, {"fun", TokenType::FUN}, {"for", TokenType::FOR},
     {"if", TokenType::IF}, {"nil", TokenType::NIL}, {"or", TokenType::OR},
     {"print", TokenType::PRINT}, {"return", TokenType::RETURN}, {"super", TokenType::SUPER},
-    {"this", TokenType::THIS}, {"var", TokenType::VAR}, {"while", TokenType::WHILE}
+    {"this", TokenType::THIS}, {"var", TokenType::VAR}, {"while", TokenType::WHILE},
+    {"true", TokenType::TRUE}
 };
 
 struct Token
@@ -317,8 +318,7 @@ enum class BinaryType
     MULTIPLICATION
 };
 
-// all LOX binary operators are left-associative
-
+// all these binary operators are left-associative
 bool binary(Expr& expr, const Token** const token, BinaryType binaryType)
 {
     TokenType tokenTypes[5] = {};
@@ -379,7 +379,7 @@ bool binary(Expr& expr, const Token** const token, BinaryType binaryType)
 
         if(!match) break;
 
-        Token operatorToken = **token;
+        const Token operatorToken = **token;
         ++(*token);
 
         Expr exprRight;
@@ -400,9 +400,40 @@ bool binary(Expr& expr, const Token** const token, BinaryType binaryType)
     return true;
 }
 
+// assignment is right-associative (that's why we are using recursion instead of loop)
+bool assignment(Expr& expr, const Token** const token)
+{
+    if(!binary(expr, token, BinaryType::EQUALITY)) return false;
+
+    if((**token).type == TokenType::EQUAL)
+    {
+        const Token operatorToken = **token;
+        ++(*token);
+
+        Expr exprRight;
+        if(!assignment(exprRight, token)) return false;
+
+        if(expr.type != ExprType::PRIMARY || expr.primary.token.type != TokenType::IDENTIFIER)
+        {
+            printError(ErrorType::PARSER, operatorToken.col, operatorToken.line,
+                    "left side of the assignment must be lvalue");
+            return false;
+        }
+
+        // add expr to vector before modifying it
+        expr.binary.idxExprLeft = _context.addExpr(expr);
+
+        expr.type = ExprType::BINARY;
+        expr.binary.idxExprRight = _context.addExpr(exprRight);
+        expr.binary.operatorToken = operatorToken;
+    }
+
+    return true;
+}
+
 bool expression(Expr& expr, const Token** const token)
 {
-    return binary(expr, token, BinaryType::EQUALITY);
+    return assignment(expr, token);
 }
 
 struct Lexer
@@ -749,7 +780,13 @@ bool evaluateBinary(Value& value, const Expr& expr)
 
     const Token& token = expr.binary.operatorToken;
 
-    if(token.type == TokenType::BANG_EQUAL)
+    if(token.type == TokenType::EQUAL)
+    {
+        const Token& varToken = _context.expressions[expr.binary.idxExprLeft].primary.token;
+        _context.addVar(varToken.string.begin, varToken.string.len, valueRight);
+        value = valueRight;
+    }
+    else if(token.type == TokenType::BANG_EQUAL)
     {
         value.type = ValueType::BOOLEAN;
         value.boolean = !isEqual(valueLeft, valueRight);
@@ -1143,7 +1180,7 @@ int main(int argc, const char* const * const argv)
     {
         source.reserve(500);
         signal(SIGINT, keyboardInterrupt);
-        printf("super LOX - implementation of craftinginterpreters.com LOX language\n");
+        printf("super LOX - implementation of craftinginterpreters.com LOX language in C++\n");
     }
 
     Array<Token> tokens;
@@ -1167,7 +1204,9 @@ int main(int argc, const char* const * const argv)
             statements.clear();
             _context.lines.clear();
             _context.expressions.clear();
-            _context.end = 0;
+            // don't call this; this will free all the strings that our runtimes uses
+            // for e.g. variable names
+            // _context.end = 0;
 
             for(;;)
             {
