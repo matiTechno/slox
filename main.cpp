@@ -278,6 +278,7 @@ void printError(ErrorType errorType, int col, int line, const char* str)
         case ErrorType::LEXER: typeStr = "lexer"; break;
         case ErrorType::PARSER: typeStr = "parser"; break;
         case ErrorType::RUNTIME: typeStr = "runtime"; break;
+        default: assert(false);
     }
 
     printf("^\n%d:%d: {%s} %s\n\n", line, col, typeStr, str);
@@ -343,30 +344,42 @@ bool unary(Expr& outputExpr, const Token** const token)
 
 enum class BinaryType
 {
+    LOGIC_OR,
+    LOGIC_AND,
     EQUALITY,
     COMPARISON,
     ADDITION,
-    MULTIPLICATION
+    MULTIPLICATION,
+    GOTO_UNARY
 };
 
 // all these binary operators are left-associative
 bool binary(Expr& expr, const Token** const token, BinaryType binaryType)
 {
     TokenType tokenTypes[5] = {};
-    BinaryType nextBinaryType;
 
     switch(binaryType)
     {
+        case BinaryType::GOTO_UNARY: return unary(expr, token);
+
+        case BinaryType::LOGIC_OR:
+        {
+            tokenTypes[0] = TokenType::OR;
+            break;
+        }
+        case BinaryType::LOGIC_AND:
+        {
+            tokenTypes[0] = TokenType::AND;
+            break;
+        }
         case BinaryType::EQUALITY:
         {
-            nextBinaryType = BinaryType::COMPARISON;
             tokenTypes[0] = TokenType::EQUAL_EQUAL;
             tokenTypes[1] = TokenType::BANG_EQUAL;
             break;
         }
         case BinaryType::COMPARISON:
         {
-            nextBinaryType = BinaryType::ADDITION;
             tokenTypes[0] = TokenType::GREATER;
             tokenTypes[1] = TokenType::GREATER_EQUAL;
             tokenTypes[2] = TokenType::LESS;
@@ -375,7 +388,6 @@ bool binary(Expr& expr, const Token** const token, BinaryType binaryType)
         }
         case BinaryType::ADDITION:
         {
-            nextBinaryType = BinaryType::MULTIPLICATION;
             tokenTypes[0] = TokenType::PLUS;
             tokenTypes[1] = TokenType::MINUS;
             break;
@@ -388,10 +400,9 @@ bool binary(Expr& expr, const Token** const token, BinaryType binaryType)
         }
     }
 
-    if(binaryType != BinaryType::MULTIPLICATION)
-    { if(!binary(expr, token, nextBinaryType)) return false; }
-    else
-    { if(!unary(expr, token)) return false;}
+    binaryType = BinaryType(int(binaryType) + 1);
+
+    if(!binary(expr, token, binaryType)) return false;
 
     for(;;)
     {
@@ -415,10 +426,7 @@ bool binary(Expr& expr, const Token** const token, BinaryType binaryType)
 
         Expr exprRight;
 
-        if(binaryType != BinaryType::MULTIPLICATION)
-        { if(!binary(exprRight, token, nextBinaryType)) return false; }
-        else
-        { if(!unary(exprRight, token)) return false;}
+        if(!binary(exprRight, token, binaryType)) return false;
 
         // add expr to vector before modifying it
         expr.binary.idxExprLeft = _context.addExpr(expr);
@@ -434,7 +442,7 @@ bool binary(Expr& expr, const Token** const token, BinaryType binaryType)
 // assignment is right-associative (that's why we are using recursion instead of loop)
 bool assignment(Expr& expr, const Token** const token)
 {
-    if(!binary(expr, token, BinaryType::EQUALITY)) return false;
+    if(!binary(expr, token, BinaryType::LOGIC_OR)) return false;
 
     if((**token).type == TokenType::EQUAL)
     {
@@ -805,15 +813,43 @@ bool evaluatePrimary(Value& value, const Expr& expr)
 
 bool evaluateBinary(Value& value, const Expr& expr)
 {
+    const Token& token = expr.binary.operatorToken;
     Value valueLeft;
     Value valueRight;
 
-    if(!evaluate(valueLeft, _context.expressions[expr.binary.idxExprLeft])) return false;
-    if(!evaluate(valueRight, _context.expressions[expr.binary.idxExprRight])) return false;
+    if(!evaluate(valueLeft, _context.expressions[expr.binary.idxExprLeft]))
+        return false;
 
-    const Token& token = expr.binary.operatorToken;
+    if(token.type == TokenType::OR)
+    {
+        if(isTrue(valueLeft))
+            value = valueLeft;
+        else // evaluate right expression only if the left is false
+        {
+            if(!evaluate(valueRight, _context.expressions[expr.binary.idxExprRight]))
+                return false;
 
-    if(token.type == TokenType::EQUAL)
+            value = valueRight;
+        }
+
+    }
+    else if(token.type == TokenType::AND)
+    {
+        if(!isTrue(valueLeft))
+            value = valueLeft;
+        else // evaluate right expression only if the left is true
+        {
+            if(!evaluate(valueRight, _context.expressions[expr.binary.idxExprRight]))
+                return false;
+
+            value = valueRight;
+        }
+    }
+    else if(!evaluate(valueRight, _context.expressions[expr.binary.idxExprRight])) // @
+    {
+        return false;
+    }
+    else if(token.type == TokenType::EQUAL)
     {
         const Token& varToken = _context.expressions[expr.binary.idxExprLeft].primary.token;
         Var* var = _context.getVar(varToken.string.begin, varToken.string.len);
@@ -831,78 +867,70 @@ bool evaluateBinary(Value& value, const Expr& expr)
         value.type = ValueType::BOOLEAN;
         value.boolean = isEqual(valueLeft, valueRight);
     }
-    else
+    else if(valueLeft.type != valueRight.type) // @
     {
-        if(valueLeft.type != valueRight.type)
-        {
-            printError(ErrorType::RUNTIME, token.col, token.line,
-                        "this operator only works with values of the same type");
-            return false;
-        }
+        printError(ErrorType::RUNTIME, token.col, token.line,
+                    "this operator only works with values of the same type");
+        return false;
+    }
+    else if(token.type == TokenType::PLUS)
+    {
+        value.type = valueLeft.type;
 
-        if(token.type == TokenType::PLUS)
-        {
-            value.type = valueLeft.type;
-
-            if(value.type == ValueType::NUMBER)
-                value.number = valueLeft.number + valueRight.number;
-            else if(value.type == ValueType::STRING)
-                value.string = _context.addString(valueLeft.string, valueRight.string);
-            else
-            {
-                printError(ErrorType::RUNTIME, token.col, token.line,
-                           "operator '+' only works with strings and numbers");
-                return false;
-            }
-        }
+        if(value.type == ValueType::NUMBER)
+            value.number = valueLeft.number + valueRight.number;
+        else if(value.type == ValueType::STRING)
+            value.string = _context.addString(valueLeft.string, valueRight.string);
         else
         {
-            if(valueLeft.type != ValueType::NUMBER)
-            {
-                printError(ErrorType::RUNTIME, token.col, token.line,
-                        "this operator only works with numbers");
-                return false;
-            }
-
-            if(token.type == TokenType::MINUS)
-            {
-                value.type = ValueType::NUMBER;
-                value.number = valueLeft.number - valueRight.number;
-            }
-            else if(token.type == TokenType::STAR)
-            {
-                value.type = ValueType::NUMBER;
-                value.number = valueLeft.number * valueRight.number;
-            }
-            else if(token.type == TokenType::SLASH)
-            {
-                value.type = ValueType::NUMBER;
-                value.number = valueLeft.number / valueRight.number;
-            }
-            else if(token.type == TokenType::GREATER)
-            {
-                value.type = ValueType::BOOLEAN;
-                value.boolean = valueLeft.number > valueRight.number;
-            }
-            else if(token.type == TokenType::GREATER_EQUAL)
-            {
-                value.type = ValueType::BOOLEAN;
-                value.boolean = valueLeft.number >= valueRight.number;
-            }
-            else if(token.type == TokenType::LESS)
-            {
-                value.type = ValueType::BOOLEAN;
-                value.boolean = valueLeft.number < valueRight.number;
-            }
-            else if(token.type == TokenType::LESS_EQUAL)
-            {
-                value.type = ValueType::BOOLEAN;
-                value.boolean = valueLeft.number <= valueRight.number;
-            }
-            else
-                assert(false);
+            printError(ErrorType::RUNTIME, token.col, token.line,
+                       "operator '+' only works with strings and numbers");
+            return false;
         }
     }
+    else if(valueLeft.type != ValueType::NUMBER) // @
+    {
+        printError(ErrorType::RUNTIME, token.col, token.line,
+                "this operator only works with numbers");
+        return false;
+    }
+    else if(token.type == TokenType::MINUS)
+    {
+        value.type = ValueType::NUMBER;
+        value.number = valueLeft.number - valueRight.number;
+    }
+    else if(token.type == TokenType::STAR)
+    {
+        value.type = ValueType::NUMBER;
+        value.number = valueLeft.number * valueRight.number;
+    }
+    else if(token.type == TokenType::SLASH)
+    {
+        value.type = ValueType::NUMBER;
+        value.number = valueLeft.number / valueRight.number;
+    }
+    else if(token.type == TokenType::GREATER)
+    {
+        value.type = ValueType::BOOLEAN;
+        value.boolean = valueLeft.number > valueRight.number;
+    }
+    else if(token.type == TokenType::GREATER_EQUAL)
+    {
+        value.type = ValueType::BOOLEAN;
+        value.boolean = valueLeft.number >= valueRight.number;
+    }
+    else if(token.type == TokenType::LESS)
+    {
+        value.type = ValueType::BOOLEAN;
+        value.boolean = valueLeft.number < valueRight.number;
+    }
+    else if(token.type == TokenType::LESS_EQUAL)
+    {
+        value.type = ValueType::BOOLEAN;
+        value.boolean = valueLeft.number <= valueRight.number;
+    }
+    else
+        assert(false);
 
     return true;
 }

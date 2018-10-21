@@ -1,6 +1,53 @@
 // this is a test script for super lox
 
+var z = 10;
+
+z or (z = 5);
+print "should print 10";
+print z;
+
+z = nil;
+z or (z = 5);
+print "should print 5";
+print z;
+
+
+z = 1;
+z and (z = 12);
+print "should print 12";
+print z;
+
+z = false;
+z and (z = 5);
+print "should print false";
+print z;
+
+
+z = 2;
+z and (z = 3) and (z = nil) and (z = 2);
+print "should print nil";
+print z;
+
+z = nil;
+z or  (z = false) or (z = 21) or (z = 12);
+print "should print 21";
+print z;
+
+z = 2;
+z and (z = 3) or (z = 5);
+print "should print 3";
+print z;
+
+if(1 and !nil)
+    print "should print this";
+else
+    print "should not print this";
+
+print "done with testing AND / OR; now we will test if and else";
+print "................................................................";
+
 var y = 8;
+var y = 8; // we allow global variable redefinition
 if(6 < 8)
 {
     print "should print 12:";
