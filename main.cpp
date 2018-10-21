@@ -117,7 +117,7 @@ struct Expr
         struct
         {
             int idxExpr;
-        } grouping; // @ we need 'grouping' for some reason; I don't know why yet
+        } grouping; // we need this to prevent statements like '(myvar) = 5;' from passing
 
         struct
         {
@@ -144,47 +144,81 @@ struct Var
     Value value;
 };
 
-struct
+struct Environment
+{
+    int idxVar;
+    int count;
+};
+
+struct Context
 {
     Array<Line> lines;
     Array<Expr> expressions;
     char scratchBuf[10000];
     Array<Var> variables;
+    Array<Environment> environments;
 
     // @TODO!!!
     // @temporary, storage for string values
     char byteArray[10000];
     int end = 0;
 
-    Var* findVar(const char* const name, const int len)
+    Context()
     {
-        for(Var& var: variables)
-        {
-            if(strncmp(var.name, name, len) == 0)
-                return &var;
-        }
-        return nullptr;
+        // push global env
+        environments.pushBack({0, 0});
     }
 
-    void addVar(const char* const name, const int len, Value value)
+    void pushEnv()
     {
-        // we allow global variable redefinition
-        Var* var = findVar(name, len);
-        if(var)
-            var->value = value;
-        else
+        environments.pushBack({environments.back().idxVar + environments.back().count, 0});
+    }
+
+    void  popEnv()
+    {
+        assert(environments.size() > 1);
+        variables.erase(environments.back().idxVar, environments.back().count);
+        environments.popBack();
+    }
+
+    bool addVar(const char* const name, const int len, Value value)
+    {
+        int idx = -1;
+        for(int i = variables.size() - 1; i >= 0; --i)
+        {
+            if(strncmp(variables[i].name, name, len) == 0)
+            {
+                idx = i;
+                break;
+            }
+        }
+
+        if(idx == -1 || idx < environments.back().idxVar)
+        {
             variables.pushBack( {addString(name, len), value} );
+            environments.back().count += 1;
+        }
+        // we allow variable redefinition but only for globals
+        else if(environments.back().idxVar == 0)
+        {
+            variables[idx].value = value;
+        }
+        else
+            return false;
+
+        return true;
     }
 
     bool getVarValue(Value& value, const char* const name, int len)
     {
-        Var* var = findVar(name, len);
-        if(var)
+        for(int i = variables.size() - 1; i >= 0; --i)
         {
-            value = var->value;
-            return true;
+            if(strncmp(variables[i].name, name, len) == 0)
+            {
+                value = variables[i].value;
+                return true;
+            }
         }
-
         return false;
     }
 
@@ -941,155 +975,244 @@ enum class StmtType
 {
     EXPRESSION,
     PRINT,
-    VAR_DECL
+    VAR_DECL,
+    BLOCK_START,
+    BLOCK_END
 };
 
 struct Stmt
 {
     StmtType type;
-    int idxExpr;
-    Token identifierToken;
+
+    union
+    {
+        struct
+        {
+            int idxExpr;
+        } expression;
+
+        struct
+        {
+            int idxExpr;
+        } print;
+
+        struct
+        {
+            Token identifierToken;
+            int idxExpr;
+        } varDecl;
+    };
 };
 
-bool statement(Stmt& stmt, const Token** const token)
+bool statement(Array<Stmt>& statements, const Token** const token);
+
+// @@@ maybe we can simplify this; move statement() body to parse() and
+// rename statementImpl() to statement()
+// pass single reference instead of array
+bool statementImpl(Array<Stmt>& statements, const Token** const token)
 {
-    if((**token).type == TokenType::PRINT)
+    switch((**token).type)
     {
-        ++(*token);
-        stmt.type = StmtType::PRINT;
-    }
-    else
-        stmt.type = StmtType::EXPRESSION;
-
-    Expr expr;
-    if(!expression(expr, token)) return false;
-
-    if((**token).type != TokenType::SEMICOLON)
-    {
-        printError(ErrorType::PARSER, (**token).col, (**token).line, "expected ';'");
-        return false;
-    }
-
-    ++(*token);
-
-    stmt.idxExpr = _context.addExpr(expr);
-
-    return true;
-}
-
-bool declaration(Stmt& stmt, const Token** const token)
-{
-    if((**token).type == TokenType::VAR)
-    {
-        ++(*token);
-
-        // @ we should have some helper functions for these
-        if((**token).type != TokenType::IDENTIFIER)
+        case TokenType::VAR:
         {
-            printError(ErrorType::PARSER, (**token).col, (**token).line,
-                    "expected variable name ");
-            return false;
+            ++(*token);
+
+            // @ we should have some helper functions for these
+            if((**token).type != TokenType::IDENTIFIER)
+            {
+                printError(ErrorType::PARSER, (**token).col, (**token).line,
+                        "expected variable name ");
+                return false;
+            }
+
+            Stmt stmt;
+            stmt.varDecl.identifierToken = **token;
+            ++(*token);
+
+            if((**token).type == TokenType::EQUAL)
+            {
+                ++(*token);
+
+                Expr expr;
+                if(!expression(expr, token)) return false;
+                stmt.varDecl.idxExpr = _context.addExpr(expr);
+            }
+            else // init to nil
+            {
+                Expr expr;
+                expr.type = ExprType::PRIMARY;
+                expr.primary.token.type = TokenType::NIL;
+                stmt.varDecl.idxExpr = _context.addExpr(expr);
+            }
+
+            if((**token).type != TokenType::SEMICOLON)
+            {
+                printError(ErrorType::PARSER, (**token).col, (**token).line, "expected ';'");
+                return false;
+            }
+
+            ++(*token);
+            stmt.type = StmtType::VAR_DECL;
+            statements.pushBack(stmt);
+            break;
         }
 
-        stmt.identifierToken = **token;
-        ++(*token);
-
-        if((**token).type == TokenType::EQUAL)
+        case TokenType::PRINT:
         {
             ++(*token);
 
             Expr expr;
             if(!expression(expr, token)) return false;
-            stmt.idxExpr = _context.addExpr(expr);
+
+            if((**token).type != TokenType::SEMICOLON)
+            {
+                printError(ErrorType::PARSER, (**token).col, (**token).line, "expected ';'");
+                return false;
+            }
+
+            ++(*token);
+            Stmt stmt;
+            stmt.type = StmtType::PRINT;
+            stmt.print.idxExpr = _context.addExpr(expr);
+            statements.pushBack(stmt);
+            break;
         }
-        else // init to nil
+
+        case TokenType::LEFT_BRACE:
+        {
+            ++(*token);
+
+            statements.pushBack({StmtType::BLOCK_START});
+
+            while((**token).type != TokenType::RIGHT_BRACE &&
+                  (**token).type != TokenType::LOX_EOF)
+            {
+                if(!statement(statements, token)) return false;
+            }
+
+            if((**token).type != TokenType::RIGHT_BRACE)
+            {
+                printError(ErrorType::PARSER, (**token).col, (**token).line,
+                        "expected '}' after block statement");
+                return false;
+            }
+
+            ++(*token);
+            statements.pushBack({StmtType::BLOCK_END});
+            break;
+        }
+
+        default:
         {
             Expr expr;
-            expr.type = ExprType::PRIMARY;
-            expr.primary.token.type = TokenType::NIL;
-            stmt.idxExpr = _context.addExpr(expr);
-        }
+            if(!expression(expr, token)) return false;
 
-        if((**token).type != TokenType::SEMICOLON)
-        {
-            printError(ErrorType::PARSER, (**token).col, (**token).line, "expected ';'");
-            return false;
-        }
+            if((**token).type != TokenType::SEMICOLON)
+            {
+                printError(ErrorType::PARSER, (**token).col, (**token).line, "expected ';'");
+                return false;
+            }
 
-        stmt.type = StmtType::VAR_DECL;
-        ++(*token);
-        return true;
+            ++(*token);
+            Stmt stmt;
+            stmt.type = StmtType::EXPRESSION;
+            stmt.expression.idxExpr = _context.addExpr(expr);
+            statements.pushBack(stmt);
+            break;
+        }
     }
-    else
-        return statement(stmt, token);
+
+    return true;
+}
+
+bool statement(Array<Stmt>& statements, const Token** const token)
+{
+    if(!statementImpl(statements, token))
+    {
+        // go to the next statement
+        // it is not 100% accurate but that's fine
+
+        while((**token).type != TokenType::LOX_EOF)
+        {
+            ++(*token);
+
+            if((*token - 1)->type == TokenType::SEMICOLON)
+                break;
+
+            switch((**token).type)
+            {
+                case TokenType::CLASS:
+                case TokenType::FUN:
+                case TokenType::VAR:
+                case TokenType::FOR:
+                case TokenType::IF:
+                case TokenType::WHILE:
+                case TokenType::PRINT:
+                case TokenType::RETURN: goto end;
+            }
+        }
+        end:;
+        return false;
+    }
+    return true;
 }
 
 bool parse(Array<Stmt>& statements, const Array<Token>& tokens)
 {
     bool error = false;
-
     const Token* token = tokens.begin();
 
+    // continue parsing even if statement is incorrect so we can report many syntax errors
+    // at once
     while(token->type != TokenType::LOX_EOF)
-    {
-        statements.pushBack({});
-
-        if(!declaration(statements.back(), &token))
-        {
-            error = true;
-
-            // go to the next statement and continue parsing (it's not always correct)
-            while(token->type != TokenType::LOX_EOF)
-            {
-                ++token;
-
-                if((token - 1)->type == TokenType::SEMICOLON)
-                    break;
-
-                switch(token->type)
-                {
-                    case TokenType::CLASS:
-                    case TokenType::FUN:
-                    case TokenType::VAR:
-                    case TokenType::FOR:
-                    case TokenType::IF:
-                    case TokenType::WHILE:
-                    case TokenType::PRINT:
-                    case TokenType::RETURN: goto end;
-                }
-            }
-            end:;
-        }
-    }
+        error = !statement(statements, &token) || error;
 
     return !error;
 }
 
-void execute(Array<Stmt>& statements)
+void execute(const Array<Stmt>& statements)
 {
-    for(Stmt& stmt: statements)
+    for(const Stmt& stmt: statements)
     {
         switch(stmt.type)
         {
             case StmtType::EXPRESSION:
             {
                 Value value;
-                if(!evaluate(value, _context.expressions[stmt.idxExpr])) return;
+                if(!evaluate(value, _context.expressions[stmt.expression.idxExpr])) return;
                 break;
             }
 
             case StmtType::PRINT:
             {
-                if(!print(_context.expressions[stmt.idxExpr])) return;
+                if(!print(_context.expressions[stmt.print.idxExpr])) return;
                 break;
             }
 
             case StmtType::VAR_DECL:
             {
                 Value value;
-                if(!evaluate(value, _context.expressions[stmt.idxExpr])) return;
-                const Token& token = stmt.identifierToken;
-                _context.addVar(token.string.begin, token.string.len, value);
+                if(!evaluate(value, _context.expressions[stmt.varDecl.idxExpr])) return;
+                const Token& token = stmt.varDecl.identifierToken;
+
+                if(!_context.addVar(token.string.begin, token.string.len, value))
+                {
+                    printError(ErrorType::RUNTIME, token.col, token.line,
+                            "only global variables can be redefined");
+                    return;
+                }
+
+                break;
+            }
+            case StmtType::BLOCK_START:
+            {
+                _context.pushEnv();
+                break;
+            }
+
+            case StmtType::BLOCK_END:
+            {
+                _context.popEnv();
                 break;
             }
 
@@ -1192,6 +1315,7 @@ int main(int argc, const char* const * const argv)
     _context.lines.reserve(100);
     _context.expressions.reserve(1000);
     _context.variables.reserve(30);
+    _context.environments.reserve(10);
 
     for(;;)
     {
@@ -1207,6 +1331,11 @@ int main(int argc, const char* const * const argv)
             // don't call this; this will free all the strings that our runtimes uses
             // for e.g. variable names
             // _context.end = 0;
+
+            // remove all local variables (e.g. previous command failed execution deep
+            // in the stack)
+            while(_context.environments.size() > 1)
+                _context.popEnv();
 
             for(;;)
             {

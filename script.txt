@@ -1,4 +1,17 @@
 // this is a test script for super lox
+
+{
+}
+
+var a = 5;
+print a;
+{
+    var a = a + 6;
+    print a;
+}
+print a;
+
+print "........................";
 var doko = 5;
 var teto = "bako";
 var bebo = doko = teto;
@@ -21,3 +34,14 @@ print 666 > 69;
 4 + 5;
 print nil;
 print lolo + " jest fajnym" + " kolesiem.";
+
+{
+    var a1 = 1;
+    var a2 = 2;
+    var a3 = 3;
+    var a4 = 4;
+    var a5 = 5;
+    var a6 = 6;
+    var a7 = 7;
+    print a1 + a2 + a3 + a4 + a5 + a6 + a7;
+}
