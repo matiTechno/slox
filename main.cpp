@@ -1594,7 +1594,7 @@ int main(int argc, const char* const * const argv)
     else // repl session
     {
         source.reserve(500);
-        // but know we can't terminate when a program is running
+        // but now we can't terminate when a program is running
         signal(SIGINT, keyboardInterrupt);
         printf("super LOX - implementation of craftinginterpreters.com LOX language in C++\n");
     }
