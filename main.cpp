@@ -1052,6 +1052,34 @@ struct Stmt
 
 bool declaration(Array<Stmt>& statements, const Token** const token);
 
+bool expressionStatement(Array<Stmt>& statements, const Token** const token)
+{
+    Expr expr;
+    if(!expression(expr, token)) return false;
+
+    if((**token).type != TokenType::SEMICOLON)
+    {
+        printError(ErrorType::PARSER, (**token).col, (**token).line,
+                "expected ';' after expression");
+        return false;
+    }
+
+    if(expr.type == ExprType::PRIMARY) // cool, we have warnings
+    {
+        printError(ErrorType::PARSER, expr.primary.token.col, expr.primary.token.line,
+                "warning: statement has no effect");
+        // but even if has no effect don't throw it out
+        // it could hide runtime errors
+    }
+
+    ++(*token);
+    Stmt stmt;
+    stmt.type = StmtType::EXPRESSION;
+    stmt.expression.idxExpr = _context.addExpr(expr);
+    statements.pushBack(stmt);
+    return true;
+}
+
 bool statement(Array<Stmt>& statements, const Token** const token)
 {
     switch((**token).type)
@@ -1188,31 +1216,107 @@ bool statement(Array<Stmt>& statements, const Token** const token)
             break;
         }
 
-        default:
+        case TokenType::FOR: // that's a big one
         {
-            Expr expr;
-            if(!expression(expr, token)) return false;
+            ++(*token);
+
+            if((**token).type != TokenType::LEFT_PAREN)
+            {
+                printError(ErrorType::PARSER, (**token).col, (**token).line,
+                        "expected '(' after for");
+                return false;
+            }
+
+            ++(*token);
+
+            // so we won't 'leak' a variable from init statement
+            statements.pushBack({StmtType::BLOCK_START});
+
+            // 1. init statement
+            if((**token).type == TokenType::SEMICOLON)
+            {
+                ++(*token);
+            }
+            else if((**token).type == TokenType::VAR)
+            {
+                if(!declaration(statements, token)) return false;
+            }
+            else
+            {
+                if(!expressionStatement(statements, token)) return false;
+            }
+
+            // 2. condition
+            int idxConditionExpr = -1;
+            if((**token).type != TokenType::SEMICOLON)
+            {
+                Expr expr;
+                if(!expression(expr, token)) return false;
+                idxConditionExpr = _context.addExpr(expr);
+            }
 
             if((**token).type != TokenType::SEMICOLON)
             {
                 printError(ErrorType::PARSER, (**token).col, (**token).line,
-                        "expected ';' after expression");
+                        "expected ';' after loop condition");
                 return false;
             }
 
-            if(expr.type == ExprType::PRIMARY) // cool, we have warnings
+            ++(*token);
+
+            // 3. increment
+            int idxIncrementExpr = -1;
+            if((**token).type != TokenType::RIGHT_PAREN)
             {
-                printError(ErrorType::PARSER, expr.primary.token.col, expr.primary.token.line,
-                        "warning: statement has no effect");
-                // but even if has no effect don't throw it out
-                // it could hide runtime errors
+                Expr expr;
+                if(!expression(expr, token)) return false;
+                idxIncrementExpr = _context.addExpr(expr);
+            }
+
+            if((**token).type != TokenType::RIGHT_PAREN)
+            {
+                printError(ErrorType::PARSER, (**token).col, (**token).line,
+                        "expected ')' after for clauses");
+                return false;
             }
 
             ++(*token);
-            Stmt stmt;
-            stmt.type = StmtType::EXPRESSION;
-            stmt.expression.idxExpr = _context.addExpr(expr);
-            statements.pushBack(stmt);
+
+            // implement in terms of a while statement
+            statements.pushBack({});
+            Stmt& stmt = statements.back();
+            stmt.type = StmtType::WHILE_STMT;
+
+            if(idxConditionExpr != -1)
+            {
+                stmt.whileStmt.idxExpr = idxConditionExpr;
+            }
+            else
+            {
+                Expr expr;
+                expr.type = ExprType::PRIMARY;
+                expr.primary.token = {TokenType::TRUE};
+                stmt.whileStmt.idxExpr = _context.addExpr(expr);
+            }
+
+            if(!statement(statements, token)) return false;
+
+            if(idxIncrementExpr != -1)
+            {
+                Stmt stmt;
+                stmt.type = StmtType::EXPRESSION;
+                stmt.expression.idxExpr = idxIncrementExpr;
+                statements.pushBack(stmt);
+            }
+
+            stmt.whileStmt.count = &statements.back() - &stmt;
+            statements.pushBack({StmtType::BLOCK_END});
+            break;
+        }
+
+        default:
+        {
+            if(!expressionStatement(statements, token)) return false;
             break;
         }
     }
@@ -1490,6 +1594,7 @@ int main(int argc, const char* const * const argv)
     else // repl session
     {
         source.reserve(500);
+        // but know we can't terminate when a program is running
         signal(SIGINT, keyboardInterrupt);
         printf("super LOX - implementation of craftinginterpreters.com LOX language in C++\n");
     }

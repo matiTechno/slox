@@ -1,5 +1,17 @@
 // this is a test script for super lox
 
+var lol = 2;
+
+for (var lol = 10 + lol; lol > -1; lol = lol - 1)
+{
+    print lol;
+    lol = lol - 1;
+}
+
+print "........... lol should be 2";
+print lol;
+print "...........";
+
 var i = 0;
 while(i < 9)
 {
