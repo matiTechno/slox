@@ -1007,7 +1007,10 @@ enum class StmtType
     VAR_DECL,
     BLOCK_START,
     BLOCK_END,
-    IF_STMT
+    // @ use IF_STMT_START, IF_STMT_END instead? same for WHILE_STMT
+    // (keep it consistent with BLOCK)
+    IF_STMT,
+    WHILE_STMT
 };
 
 struct Stmt
@@ -1038,6 +1041,12 @@ struct Stmt
             int count;
             int elseCount;
         } ifStmt;
+
+        struct
+        {
+            int idxExpr;
+            int count;
+        } whileStmt;
     };
 };
 
@@ -1138,6 +1147,44 @@ bool statement(Array<Stmt>& statements, const Token** const token)
                 stmt.ifStmt.elseCount = &statements.back() - (&stmt + stmt.ifStmt.count);
             }
 
+            break;
+        }
+
+        case TokenType::WHILE:
+        {
+            ++(*token);
+
+            if((**token).type != TokenType::LEFT_PAREN)
+            {
+                printError(ErrorType::PARSER, (**token).col, (**token).line,
+                        "expected '(' after while");
+                return false;
+            }
+
+            ++(*token);
+
+            statements.pushBack({});
+            Stmt& stmt = statements.back();
+            stmt.type = StmtType::WHILE_STMT;
+
+            {
+                Expr expr;
+                if(!expression(expr, token)) return false;
+                stmt.whileStmt.idxExpr = _context.addExpr(expr);
+            }
+
+            if((**token).type != TokenType::RIGHT_PAREN)
+            {
+                printError(ErrorType::PARSER, (**token).col, (**token).line,
+                        "expected ')' after while condition");
+                return false;
+            }
+
+            ++(*token);
+
+            if(!statement(statements, token)) return false;
+
+            stmt.whileStmt.count = &statements.back() - &stmt;
             break;
         }
 
@@ -1318,7 +1365,7 @@ bool execute(const Stmt* const begin, const Stmt* const end)
             case StmtType::IF_STMT: // this is so fucking tricky; bad design
             {
                 Value value;
-                const Stmt* lastGroupStmt = stmt + stmt->ifStmt.count + stmt->ifStmt.elseCount;
+                const Stmt* lastChildStmt = stmt + stmt->ifStmt.count + stmt->ifStmt.elseCount;
 
                 if(!evaluate(value, _context.expressions[stmt->ifStmt.idxExpr])) return false;
 
@@ -1328,10 +1375,31 @@ bool execute(const Stmt* const begin, const Stmt* const end)
                 }
                 else if(stmt->ifStmt.elseCount)
                 {
-                    if(!execute(stmt + stmt->ifStmt.count + 1, lastGroupStmt + 1)) return false;
+                    if(!execute(stmt + stmt->ifStmt.count + 1, lastChildStmt + 1)) return false;
                 }
 
-                stmt = lastGroupStmt;
+                stmt = lastChildStmt;
+                break;
+            }
+
+            case StmtType::WHILE_STMT:
+            {
+                const Stmt* lastChildStmt = stmt + stmt->whileStmt.count;
+
+                for(;;)
+                {
+                    Value value;
+
+                    if(!evaluate(value, _context.expressions[stmt->whileStmt.idxExpr]))
+                        return false;
+
+                    if(!isTrue(value))
+                        break;
+
+                    if(!execute(stmt + 1, lastChildStmt + 1)) return false;
+                }
+
+                stmt = lastChildStmt;
                 break;
             }
 

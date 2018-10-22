@@ -1,5 +1,21 @@
 // this is a test script for super lox
 
+var i = 0;
+while(i < 9)
+{
+    print i;
+    i = i + 1;
+}
+
+print "........";
+
+while((i = i + 1) < 13)
+    print i;
+
+
+print "hi" or 2; // "hi".
+print nil or "yes"; // "yes".
+
 var z = 10;
 
 z or (z = 5);
