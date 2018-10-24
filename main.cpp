@@ -5,6 +5,7 @@
 #include <unistd.h> // check if stdin is terminal or pipe
 #include <signal.h> // keyboard interrupt
 #include <time.h>
+#include <math.h>
 
 bool isDigit(const char c) {return c >= '0' && c <= '9';}
 
@@ -83,8 +84,6 @@ enum class ValueType
     CALLABLE,
 };
 
-struct Expr;
-
 struct Value
 {
     ValueType type;
@@ -151,8 +150,8 @@ struct Expr
         struct
         {
             int idxExprCallee;
-            // @ we are wasting memory for nearly every expression
-            int idxArgs[MAXARGS];
+            int idxExprArg;
+            int numArgs;
             Token token; // used for error reporting
         } call;
     };
@@ -176,6 +175,15 @@ struct Environment
     int count;
 };
 
+enum class ErrorType
+{
+    LEXER,
+    PARSER,
+    RUNTIME
+};
+
+void printError(ErrorType errorType, int col, int line, const char* str);
+
 struct Context
 {
     Array<Line> lines;
@@ -195,26 +203,47 @@ struct Context
         environments.pushBack({0, 0});
 
         // add some native functions
+        const char* name;
         Value value;
         value.type = ValueType::CALLABLE;
-        value.callable.numParams = 0;
 
-        value.callable.native = [](Value& value, const Token token, const Value* args)
         {
-            (void)token;
-            (void)args;
+            value.callable.numParams = 0;
+            value.callable.native = [](Value& value, const Token token, const Value* args)
+            {
+                (void)token;
+                (void)args;
 
-            value.type = ValueType::NUMBER;
+                value.type = ValueType::NUMBER;
 
-            timespec ts;
-            clock_gettime(CLOCK_MONOTONIC, &ts);
-            value.number = ts.tv_sec + ts.tv_nsec / 1000000000.0;
+                timespec ts;
+                clock_gettime(CLOCK_MONOTONIC, &ts);
+                value.number = ts.tv_sec + ts.tv_nsec / 1000000000.0;
+                return true;
+            };
 
-            return true;
-        };
+            name = "clock";
+            addVar(name, strlen(name), value);
+        }
+        {
+            value.callable.numParams = 1;
+            value.callable.native = [](Value& value, const Token token, const Value* args)
+            {
+                if(args[0].type != ValueType::NUMBER)
+                {
+                    printError(ErrorType::RUNTIME, token.col, token.line,
+                            "expected number as the argument");
+                    return false;
+                }
 
-        const char* name = "clock";
-        addVar(name, strlen(name), value);
+                value.type = ValueType::NUMBER;
+                value.number = sin(args[0].number);
+                return true;
+            };
+
+            name = "sin";
+            addVar(name, strlen(name), value);
+        }
     }
 
     void pushEnv()
@@ -305,13 +334,6 @@ struct Context
 
 } static _context;
 
-enum class ErrorType
-{
-    LEXER,
-    PARSER,
-    RUNTIME
-};
-
 void printError(ErrorType errorType, int col, int line, const char* str)
 {
     printf("\n%.*s\n", _context.lines[line - 1].len, _context.lines[line - 1].begin);
@@ -382,7 +404,9 @@ bool call(Expr& expr, const Token** const token)
             expr.call.idxExprCallee = _context.addExpr(expr);
             expr.type = ExprType::CALL;
             expr.call.token = **token;
-            int argIdx = 0;
+            expr.call.numArgs = 0;
+
+            Expr args[MAXARGS];
 
             ++(*token);
 
@@ -390,7 +414,7 @@ bool call(Expr& expr, const Token** const token)
             {
                 while(true)
                 {
-                    if(argIdx == getSize(expr.call.idxArgs))
+                    if(expr.call.numArgs == MAXARGS)
                     {
                         snprintf(_context.scratchBuf, getSize(_context.scratchBuf),
                                 "LOX supports only %d function arguments", MAXARGS);
@@ -400,10 +424,8 @@ bool call(Expr& expr, const Token** const token)
                         return false;
                     }
 
-                    Expr exprArg;
-                    if(!expression(exprArg, token)) return false;
-                    expr.call.idxArgs[argIdx] = _context.addExpr(exprArg);
-                    ++argIdx;
+                    if(!expression(args[expr.call.numArgs], token)) return false;
+                    ++expr.call.numArgs;
 
                     if((**token).type != TokenType::COMMA)
                         break;
@@ -412,8 +434,17 @@ bool call(Expr& expr, const Token** const token)
                 }
             }
 
-            if(argIdx < getSize(expr.call.idxArgs))
-                expr.call.idxArgs[argIdx] = -1;
+            // we can't add the arguments to _context.expressions in while(true)
+            // because expression() can call _context.addExpr() itself and we want
+            // arguments to be continuous in a vector
+
+            for(int i = 0; i < expr.call.numArgs; ++i)
+            {
+                const int idx = _context.addExpr(args[i]);
+
+                if(i == 0)
+                    expr.call.idxExprArg = idx;
+            }
 
             if((**token).type != TokenType::RIGHT_PAREN)
             {
@@ -1090,17 +1121,10 @@ bool evaluateCall(Value& outputValue, const Expr& expr)
         return false;
     }
 
-    int numArgs = 0;
-    for(const int idx: expr.call.idxArgs)
-    {
-        if(idx == -1) break;
-        ++numArgs;
-    }
-
-    if(numArgs != value.callable.numParams)
+    if(expr.call.numArgs != value.callable.numParams)
     {
         snprintf(_context.scratchBuf, getSize(_context.scratchBuf),
-                "expected %d arguments but got %d", value.callable.numParams, numArgs);
+                "expected %d arguments but got %d", value.callable.numParams, expr.call.numArgs);
 
         printError(ErrorType::RUNTIME, expr.call.token.col, expr.call.token.line,
                 _context.scratchBuf);
@@ -1109,9 +1133,10 @@ bool evaluateCall(Value& outputValue, const Expr& expr)
 
     Value argValues[MAXARGS];
 
-    for(int i = 0; i < numArgs; ++i)
+    for(int i = 0; i < expr.call.numArgs; ++i)
     {
-        if(!evaluate(argValues[i], _context.expressions[expr.call.idxArgs[i]])) return false;
+        if( !evaluate(argValues[i], _context.expressions[expr.call.idxExprArg + i]) )
+            return false;
     }
 
     if(value.callable.native)

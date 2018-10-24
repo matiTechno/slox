@@ -1,5 +1,7 @@
 // this is a test script for super lox
 
+print sin(4);
+
 var timestart = clock();
 
 var lol = 2;
