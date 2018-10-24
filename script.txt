@@ -1,5 +1,7 @@
 // this is a test script for super lox
 
+var timestart = clock();
+
 var lol = 2;
 
 for (var lol = 10 + lol; lol > -1; lol = lol - 1)
@@ -173,3 +175,7 @@ print lolo + " jest fajnym" + " kolesiem.";
     var a7 = 7;
     print a1 + a2 + a3 + a4 + a5 + a6 + a7;
 }
+
+var timeend = clock();
+print "time elapsed: ";
+print timeend - timestart;

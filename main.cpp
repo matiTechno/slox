@@ -4,6 +4,7 @@
 #include <string.h>
 #include <unistd.h> // check if stdin is terminal or pipe
 #include <signal.h> // keyboard interrupt
+#include <time.h>
 
 bool isDigit(const char c) {return c >= '0' && c <= '9';}
 
@@ -78,8 +79,11 @@ enum class ValueType
     BOOLEAN,
     NUMBER,
     STRING,
-    NIL
+    NIL,
+    CALLABLE,
 };
+
+struct Expr;
 
 struct Value
 {
@@ -90,6 +94,13 @@ struct Value
         bool boolean;
         double number;
         const char* string;
+
+        struct
+        {
+            int numParams;
+            // token is for error reporting
+            bool (*native)(Value& value, Token token, const Value* args);
+        } callable;
     };
 };
 
@@ -98,7 +109,14 @@ enum class ExprType
     BINARY,
     GROUPING,
     PRIMARY,
-    UNARY
+    UNARY,
+    CALL
+};
+
+enum
+{
+    // yes, LOX supports only 8 function arguments
+    MAXARGS = 8
 };
 
 struct Expr
@@ -129,6 +147,14 @@ struct Expr
         {
             Token token;
         } primary;
+
+        struct
+        {
+            int idxExprCallee;
+            // @ we are wasting memory for nearly every expression
+            int idxArgs[MAXARGS];
+            Token token; // used for error reporting
+        } call;
     };
 };
 
@@ -167,6 +193,28 @@ struct Context
     {
         // push global env
         environments.pushBack({0, 0});
+
+        // add some native functions
+        Value value;
+        value.type = ValueType::CALLABLE;
+        value.callable.numParams = 0;
+
+        value.callable.native = [](Value& value, const Token token, const Value* args)
+        {
+            (void)token;
+            (void)args;
+
+            value.type = ValueType::NUMBER;
+
+            timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            value.number = ts.tv_sec + ts.tv_nsec / 1000000000.0;
+
+            return true;
+        };
+
+        const char* name = "clock";
+        addVar(name, strlen(name), value);
     }
 
     void pushEnv()
@@ -323,6 +371,66 @@ bool primary(Expr& outputExpr, const Token** const token)
     return false;
 }
 
+bool call(Expr& expr, const Token** const token)
+{
+    if(!primary(expr, token)) return false;
+
+    while(true)
+    {
+        if((**token).type == TokenType::LEFT_PAREN)
+        {
+            expr.call.idxExprCallee = _context.addExpr(expr);
+            expr.type = ExprType::CALL;
+            expr.call.token = **token;
+            int argIdx = 0;
+
+            ++(*token);
+
+            if((**token).type != TokenType::RIGHT_PAREN)
+            {
+                while(true)
+                {
+                    if(argIdx == getSize(expr.call.idxArgs))
+                    {
+                        snprintf(_context.scratchBuf, getSize(_context.scratchBuf),
+                                "LOX supports only %d function arguments", MAXARGS);
+
+                        printError(ErrorType::PARSER, (**token).col, (**token).line,
+                                _context.scratchBuf);
+                        return false;
+                    }
+
+                    Expr exprArg;
+                    if(!expression(exprArg, token)) return false;
+                    expr.call.idxArgs[argIdx] = _context.addExpr(exprArg);
+                    ++argIdx;
+
+                    if((**token).type != TokenType::COMMA)
+                        break;
+
+                    ++(*token);
+                }
+            }
+
+            if(argIdx < getSize(expr.call.idxArgs))
+                expr.call.idxArgs[argIdx] = -1;
+
+            if((**token).type != TokenType::RIGHT_PAREN)
+            {
+                printError(ErrorType::PARSER, (**token).col, (**token).line,
+                        "exprected ')' after arguments");
+                return false;
+            }
+
+            ++(*token);
+        }
+        else
+            break;
+    }
+
+    return true;
+}
+
 bool unary(Expr& outputExpr, const Token** const token)
 {
     if((**token).type == TokenType::BANG || (**token).type == TokenType::MINUS)
@@ -339,7 +447,7 @@ bool unary(Expr& outputExpr, const Token** const token)
         return true;
     }
 
-    return primary(outputExpr, token);
+    return call(outputExpr, token);
 }
 
 enum class BinaryType
@@ -970,6 +1078,54 @@ bool evaluateGrouping(Value& value, const Expr& expr)
     return evaluate(value, _context.expressions[expr.grouping.idxExpr]);
 }
 
+bool evaluateCall(Value& outputValue, const Expr& expr)
+{
+    Value value;
+    if(!evaluate(value, _context.expressions[expr.call.idxExprCallee])) return false;
+
+    if(value.type != ValueType::CALLABLE)
+    {
+        printError(ErrorType::RUNTIME, expr.call.token.col, expr.call.token.line,
+                "only functions can be called");
+        return false;
+    }
+
+    int numArgs = 0;
+    for(const int idx: expr.call.idxArgs)
+    {
+        if(idx == -1) break;
+        ++numArgs;
+    }
+
+    if(numArgs != value.callable.numParams)
+    {
+        snprintf(_context.scratchBuf, getSize(_context.scratchBuf),
+                "expected %d arguments but got %d", value.callable.numParams, numArgs);
+
+        printError(ErrorType::RUNTIME, expr.call.token.col, expr.call.token.line,
+                _context.scratchBuf);
+        return false;
+    }
+
+    Value argValues[MAXARGS];
+
+    for(int i = 0; i < numArgs; ++i)
+    {
+        if(!evaluate(argValues[i], _context.expressions[expr.call.idxArgs[i]])) return false;
+    }
+
+    if(value.callable.native)
+    {
+        if(!value.callable.native(outputValue, expr.call.token, argValues)) return false;
+    }
+    else
+    {
+        // @ TODO
+    }
+
+    return true;
+}
+
 bool evaluate(Value& value, const Expr& expr)
 {
     switch(expr.type)
@@ -978,6 +1134,7 @@ bool evaluate(Value& value, const Expr& expr)
         case ExprType::UNARY: return evaluateUnary(value, expr);
         case ExprType::GROUPING: return evaluateGrouping(value, expr);
         case ExprType::BINARY: return evaluateBinary(value, expr);
+        case ExprType::CALL: return evaluateCall(value, expr);
     };
     assert(false);
 }
