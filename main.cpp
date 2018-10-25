@@ -84,6 +84,8 @@ enum class ValueType
     CALLABLE,
 };
 
+struct Stmt;
+
 struct Value
 {
     ValueType type;
@@ -99,6 +101,15 @@ struct Value
             int numParams;
             // token is for error reporting
             bool (*native)(Value& value, Token token, const Value* args);
+
+            // use these if native is nullptr
+            // @@@@
+            // we can use pointers because statements will not grow during value lifetime
+            // oh, that's not true, what about repl sessions or executing new script from 
+            // current script
+            const Stmt* stmtBegin;
+            const Stmt* stmtEnd;
+            const char* paramStr; // these are parameters names separated by '\0'
         } callable;
     };
 };
@@ -180,6 +191,65 @@ enum class ErrorType
     LEXER,
     PARSER,
     RUNTIME
+};
+
+enum class StmtType
+{
+    EXPRESSION,
+    PRINT,
+    VAR_DECL,
+    BLOCK_START,
+    BLOCK_END,
+    // @ use IF_STMT_START, IF_STMT_END instead? same for WHILE_STMT
+    // (keep it consistent with BLOCK)
+    IF_STMT,
+    WHILE_STMT,
+    FUN_DECL
+};
+
+struct Stmt
+{
+    StmtType type;
+
+    union
+    {
+        struct
+        {
+            int idxExpr;
+        } expression;
+
+        struct
+        {
+            int idxExpr;
+        } print;
+
+        struct
+        {
+            Token identifierToken;
+            int idxExpr;
+        } varDecl;
+
+        struct
+        {
+            int idxExpr;
+            int count;
+            int elseCount;
+        } ifStmt;
+
+        struct
+        {
+            int idxExpr;
+            int count;
+        } whileStmt;
+
+        struct
+        {
+            Token identifierToken;
+            const char* paramStr;
+            int numParams;
+            int count; // numbers of statements in the function body
+        } funDecl;
+    };
 };
 
 void printError(ErrorType errorType, int col, int line, const char* str);
@@ -1109,6 +1179,8 @@ bool evaluateGrouping(Value& value, const Expr& expr)
     return evaluate(value, _context.expressions[expr.grouping.idxExpr]);
 }
 
+bool execute(const Stmt* const begin, const Stmt* const end);
+
 bool evaluateCall(Value& outputValue, const Expr& expr)
 {
     Value value;
@@ -1145,7 +1217,21 @@ bool evaluateCall(Value& outputValue, const Expr& expr)
     }
     else
     {
-        // @ TODO
+        _context.pushEnv();
+
+        const char* paramStr = value.callable.paramStr;
+
+        for(int i = 0; i < expr.call.numArgs; ++i)
+        {
+            const int paramStrLen = strlen(paramStr);
+            _context.addVar(paramStr, paramStrLen, argValues[i]);
+            paramStr += paramStrLen + 1; // @ this is a big hack...
+        }
+
+        if(!execute(value.callable.stmtBegin, value.callable.stmtEnd)) return false;
+        _context.popEnv();
+        // @TODO
+        outputValue.type = ValueType::NIL;
     }
 
     return true;
@@ -1176,61 +1262,17 @@ bool print(const Expr& expr)
         case ValueType::STRING: printf("\"%s\"\n", value.string); break;
         case ValueType::NUMBER: printf("%f\n", value.number); break;
 
+        case ValueType::CALLABLE:
+        {
+            printf("%s\n", value.callable.native ? "native function" : "function");
+            break;
+        }
+
         default: assert(false);
     }
 
     return true;
 }
-
-enum class StmtType
-{
-    EXPRESSION,
-    PRINT,
-    VAR_DECL,
-    BLOCK_START,
-    BLOCK_END,
-    // @ use IF_STMT_START, IF_STMT_END instead? same for WHILE_STMT
-    // (keep it consistent with BLOCK)
-    IF_STMT,
-    WHILE_STMT
-};
-
-struct Stmt
-{
-    StmtType type;
-
-    union
-    {
-        struct
-        {
-            int idxExpr;
-        } expression;
-
-        struct
-        {
-            int idxExpr;
-        } print;
-
-        struct
-        {
-            Token identifierToken;
-            int idxExpr;
-        } varDecl;
-
-        struct
-        {
-            int idxExpr;
-            int count;
-            int elseCount;
-        } ifStmt;
-
-        struct
-        {
-            int idxExpr;
-            int count;
-        } whileStmt;
-    };
-};
 
 bool declaration(Array<Stmt>& statements, const Token** const token);
 
@@ -1259,6 +1301,28 @@ bool expressionStatement(Array<Stmt>& statements, const Token** const token)
     stmt.type = StmtType::EXPRESSION;
     stmt.expression.idxExpr = _context.addExpr(expr);
     statements.pushBack(stmt);
+    return true;
+}
+
+bool blockStatement(Array<Stmt>& statements, const Token** const token)
+{
+    statements.pushBack({StmtType::BLOCK_START});
+
+    while((**token).type != TokenType::RIGHT_BRACE &&
+          (**token).type != TokenType::LOX_EOF)
+    {
+        if(!declaration(statements, token)) return false;
+    }
+
+    if((**token).type != TokenType::RIGHT_BRACE)
+    {
+        printError(ErrorType::PARSER, (**token).col, (**token).line,
+                "expected '}' after block statement");
+        return false;
+    }
+
+    ++(*token);
+    statements.pushBack({StmtType::BLOCK_END});
     return true;
 }
 
@@ -1291,25 +1355,7 @@ bool statement(Array<Stmt>& statements, const Token** const token)
         case TokenType::LEFT_BRACE:
         {
             ++(*token);
-
-            statements.pushBack({StmtType::BLOCK_START});
-
-            while((**token).type != TokenType::RIGHT_BRACE &&
-                  (**token).type != TokenType::LOX_EOF)
-            {
-                if(!declaration(statements, token)) return false;
-            }
-
-            if((**token).type != TokenType::RIGHT_BRACE)
-            {
-                printError(ErrorType::PARSER, (**token).col, (**token).line,
-                        "expected '}' after block statement");
-                return false;
-            }
-
-            ++(*token);
-            statements.pushBack({StmtType::BLOCK_END});
-            break;
+            return blockStatement(statements, token);
         }
 
         case TokenType::IF: // damn
@@ -1497,17 +1543,15 @@ bool statement(Array<Stmt>& statements, const Token** const token)
         }
 
         default:
-        {
-            if(!expressionStatement(statements, token)) return false;
-            break;
-        }
+            return expressionStatement(statements, token);
     }
 
     return true;
 }
 
 // we keep declaration() and statement() separately because sometimes we
-// want a statement that is not a variable declaration
+// want a statement that is not a variable or function declaration
+// (local function declarations are allowed)
 
 bool declaration(Array<Stmt>& statements, const Token** const token)
 {
@@ -1552,6 +1596,94 @@ bool declaration(Array<Stmt>& statements, const Token** const token)
         ++(*token);
         stmt.type = StmtType::VAR_DECL;
         statements.pushBack(stmt);
+        return true;
+    }
+    else if((**token).type == TokenType::FUN)
+    {
+        ++(*token);
+
+        if((**token).type != TokenType::IDENTIFIER)
+        {
+            printError(ErrorType::PARSER, (**token).col, (**token).line,
+                    "expected function name");
+            return false;
+        }
+
+        statements.pushBack({});
+        Stmt& stmt = statements.back();
+        stmt.type = StmtType::FUN_DECL;
+        stmt.funDecl.identifierToken = **token;
+        stmt.funDecl.numParams = 0;
+
+        ++(*token);
+
+        if((**token).type != TokenType::LEFT_PAREN)
+        {
+            printError(ErrorType::PARSER, (**token).col, (**token).line,
+                    "expected '(' after function name");
+            return false;
+        }
+
+        ++(*token);
+
+        if((**token).type != TokenType::RIGHT_PAREN)
+        {
+            while(true)
+            {
+                if(stmt.funDecl.numParams == MAXARGS)
+                {
+                    snprintf(_context.scratchBuf, getSize(_context.scratchBuf),
+                            "LOX supports only %d function arguments", MAXARGS);
+
+                    printError(ErrorType::PARSER, (**token).col, (**token).line,
+                            _context.scratchBuf);
+                    return false;
+                }
+
+                if((**token).type != TokenType::IDENTIFIER)
+                {
+                    printError(ErrorType::PARSER, (**token).col, (**token).line,
+                            "expected parameter name");
+                    return false;
+                }
+
+                const char* paramStr = _context.addString((**token).string.begin,
+                        (**token).string.len);
+
+                if(stmt.funDecl.numParams == 0)
+                    stmt.funDecl.paramStr = paramStr;
+
+                ++stmt.funDecl.numParams;
+                ++(*token);
+
+                if((**token).type != TokenType::COMMA)
+                    break;
+
+                ++(*token);
+            }
+        }
+
+        if((**token).type != TokenType::RIGHT_PAREN)
+        {
+            printError(ErrorType::PARSER, (**token).col, (**token).line,
+                    "expected ')' after function parameters");
+            return false;
+        }
+
+        ++(*token);
+
+        if((**token).type != TokenType::LEFT_BRACE)
+        {
+
+            printError(ErrorType::PARSER, (**token).col, (**token).line,
+                    "expected '{' before function body");
+            return false;
+        }
+
+        ++(*token);
+
+        if(!blockStatement(statements, token)) return false;
+        stmt.funDecl.count = &statements.back() - &stmt;
         return true;
     }
     else
@@ -1634,6 +1766,31 @@ bool execute(const Stmt* const begin, const Stmt* const end)
                     return false;
                 }
 
+                break;
+            }
+            case StmtType::FUN_DECL:
+            {
+                Value value;
+                value.type = ValueType::CALLABLE;
+                value.callable.numParams = stmt->funDecl.numParams;
+                value.callable.native = nullptr;
+                // we don't want to execute BLOCK statement (we push env in evaluateCall()
+                // manually) so we skip it; FUN_DECL is also skipped
+                value.callable.stmtBegin = stmt + 1 + 1;
+                value.callable.stmtEnd = stmt + 1 + stmt->funDecl.count - 1;
+                value.callable.paramStr = stmt->funDecl.paramStr;
+
+                const Token& token = stmt->funDecl.identifierToken;
+
+                if(!_context.addVar(token.string.begin, token.string.len, value))
+                {
+                    printError(ErrorType::RUNTIME, token.col, token.line,
+                            "only global functions can be redefined");
+                    return false;
+                }
+
+                // we don't want to execute the function, it is only a declaration...
+                stmt += stmt->funDecl.count;
                 break;
             }
             case StmtType::BLOCK_START:
@@ -1798,13 +1955,19 @@ int main(int argc, const char* const * const argv)
         {
             printf(">>> ");
 
+            // we shouldn't clear this things; and we shouldn't grow them, wo we don't
+            // invalidate the pointers...
+            // it works if functions are not used...
+            // need to change the design
+            statements.clear();
             source.clear();
             tokens.clear();
-            statements.clear();
             _context.lines.clear();
             _context.expressions.clear();
+
             // don't call this; this will free all the strings that our runtimes uses
             // for e.g. variable names
+
             // _context.end = 0;
 
             // remove all local variables (e.g. previous command failed executing deep
