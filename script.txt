@@ -1,5 +1,30 @@
 // this is a test script for super lox
 
+fun add(l,r)
+{
+    var i = 4 + 5;
+    i = 0;
+    return l+r;
+    i = i + 1;
+    print 2;
+}
+
+print add(1000, 2000);
+
+// this is a killer... 1 GB is not enough
+fun fibonacci(n) {
+  if (n <= 1) return n;
+  return fibonacci(n - 2) + fibonacci(n - 1);
+}
+
+print ".............. fibonnacii";
+
+for (var i = 0; i < 12; i = i + 1) {
+  print fibonacci(i);
+}
+
+print ".............. end fibonnacii";
+
 var count = 0;
 
 fun add(l, r)

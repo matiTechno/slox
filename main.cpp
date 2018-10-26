@@ -103,7 +103,7 @@ struct Value
             bool (*native)(Value& value, Token token, const Value* args);
 
             // use these if native is nullptr
-            // @@@@
+            // @TODO:
             // we can use pointers because statements will not grow during value lifetime
             // oh, that's not true, what about repl sessions or executing new script from 
             // current script
@@ -131,7 +131,7 @@ enum
 
 struct Expr
 {
-    ExprType type; // we evaluate the expression based on its type
+    ExprType type;
 
     union
     {
@@ -204,7 +204,8 @@ enum class StmtType
     // (keep it consistent with BLOCK)
     IF_STMT,
     WHILE_STMT,
-    FUN_DECL
+    FUN_DECL,
+    RETURN_STMT
 };
 
 struct Stmt
@@ -247,8 +248,13 @@ struct Stmt
             Token identifierToken;
             const char* paramStr;
             int numParams;
-            int count; // numbers of statements in the function body
+            int count; // number of statements in a function body
         } funDecl;
+
+        struct
+        {
+            int idxExpr;
+        } returnStmt;
     };
 };
 
@@ -262,8 +268,8 @@ struct Context
     Array<Var> variables;
     Array<Environment> environments;
 
-    // @TODO!!!
-    // @temporary, storage for string values
+    // @TODO:
+    // temporary, storage for string values
     char byteArray[10000];
     int end = 0;
 
@@ -648,7 +654,7 @@ bool binary(Expr& expr, const Token** const token, BinaryType binaryType)
     return true;
 }
 
-// assignment is right-associative (that's why we are using recursion instead of loop)
+// assignment is right-associative (that's why we are using recursion instead of a loop)
 bool assignment(Expr& expr, const Token** const token)
 {
     if(!binary(expr, token, BinaryType::LOGIC_OR)) return false;
@@ -734,7 +740,7 @@ struct Lexer
         return true;
     }
 
-    const char* pos() const {return it - 1;} // @ in fact it is a previous position
+    const char* pos() const {return it - 1;} // in fact it is a previous position
     char peek() const {return *it;}
     char peekNext() const {return end() ? *it : *(it + 1);}
 
@@ -1076,7 +1082,7 @@ bool evaluateBinary(Value& value, const Expr& expr)
         value.type = ValueType::BOOLEAN;
         value.boolean = isEqual(valueLeft, valueRight);
     }
-    else if(valueLeft.type != valueRight.type) // @
+    else if(valueLeft.type != valueRight.type) // !!!
     {
         printError(ErrorType::RUNTIME, token.col, token.line,
                     "this operator only works with values of the same type");
@@ -1097,7 +1103,7 @@ bool evaluateBinary(Value& value, const Expr& expr)
             return false;
         }
     }
-    else if(valueLeft.type != ValueType::NUMBER) // @
+    else if(valueLeft.type != ValueType::NUMBER) // !!!
     {
         printError(ErrorType::RUNTIME, token.col, token.line,
                 "this operator only works with numbers");
@@ -1163,8 +1169,7 @@ bool evaluateUnary(Value& value, const Expr& expr)
         value.type = ValueType::NUMBER;
         value.number = -valueRight.number;
     }
-    // BANG
-    else
+    else // BANG
     {
         value.type = ValueType::BOOLEAN;
         value.boolean = !isTrue(valueRight);
@@ -1173,7 +1178,7 @@ bool evaluateUnary(Value& value, const Expr& expr)
     return true;
 }
 
-// @ GroupingExpr instead of Expr as parameter type?
+// @ GroupingExpr instead of Expr as a parameter type? (same for other expression types)
 bool evaluateGrouping(Value& value, const Expr& expr)
 {
     return evaluate(value, _context.expressions[expr.grouping.idxExpr]);
@@ -1217,6 +1222,8 @@ bool evaluateCall(Value& outputValue, const Expr& expr)
     }
     else
     {
+        // @TODO:
+        // we have to rethink the design; only global env should be parent to function env
         _context.pushEnv();
 
         const char* paramStr = value.callable.paramStr;
@@ -1228,10 +1235,20 @@ bool evaluateCall(Value& outputValue, const Expr& expr)
             paramStr += paramStrLen + 1; // @ this is a big hack...
         }
 
-        if(!execute(value.callable.stmtBegin, value.callable.stmtEnd)) return false;
+        const bool success = execute(value.callable.stmtBegin, value.callable.stmtEnd);
+
+        const char* returnVarName = "return";
+        const Var* returnVar = _context.getVar(returnVarName, strlen(returnVarName));
+
+        if(!success && !returnVar)
+            return false; // execute() really failed (runtime error)
+
+        if(!returnVar)
+            outputValue.type = ValueType::NIL;
+        else
+            outputValue = returnVar->value;
+
         _context.popEnv();
-        // @TODO
-        outputValue.type = ValueType::NIL;
     }
 
     return true;
@@ -1358,7 +1375,7 @@ bool statement(Array<Stmt>& statements, const Token** const token)
             return blockStatement(statements, token);
         }
 
-        case TokenType::IF: // damn
+        case TokenType::IF:
         {
             ++(*token);
 
@@ -1444,7 +1461,7 @@ bool statement(Array<Stmt>& statements, const Token** const token)
             break;
         }
 
-        case TokenType::FOR: // that's a big one
+        case TokenType::FOR:
         {
             ++(*token);
 
@@ -1542,6 +1559,35 @@ bool statement(Array<Stmt>& statements, const Token** const token)
             break;
         }
 
+        case TokenType::RETURN:
+        {
+            ++(*token);
+
+            Expr expr;
+            expr.type = ExprType::PRIMARY;
+            expr.primary.token = {TokenType::NIL};
+
+            if((**token).type != TokenType::SEMICOLON)
+            {
+                if(!expression(expr, token)) return false;
+            }
+
+            if((**token).type != TokenType::SEMICOLON)
+            {
+                printError(ErrorType::PARSER, (**token).col, (**token).line,
+                        "expected ';' after return statement");
+                return false;
+            }
+
+            ++(*token);
+
+            Stmt stmt;
+            stmt.type = StmtType::RETURN_STMT;
+            stmt.returnStmt.idxExpr = _context.addExpr(expr);
+            statements.pushBack(stmt);
+            break;
+        }
+
         default:
             return expressionStatement(statements, token);
     }
@@ -1551,7 +1597,6 @@ bool statement(Array<Stmt>& statements, const Token** const token)
 
 // we keep declaration() and statement() separately because sometimes we
 // want a statement that is not a variable or function declaration
-// (local function declarations are allowed)
 
 bool declaration(Array<Stmt>& statements, const Token** const token)
 {
@@ -1695,7 +1740,7 @@ bool parse(Array<Stmt>& statements, const Array<Token>& tokens)
     bool error = false;
     const Token* token = tokens.begin();
 
-    // continue parsing even if statement is incorrect so we can report many syntax errors
+    // continue parsing even if a statement is incorrect so we can report many syntax errors
     // at once
     while(token->type != TokenType::LOX_EOF)
     {
@@ -1753,6 +1798,8 @@ bool execute(const Stmt* const begin, const Stmt* const end)
                 break;
             }
 
+            // @TODO: implement this:
+            // Error at 'lol': Cannot read local variable in its own initializer.
             case StmtType::VAR_DECL:
             {
                 Value value;
@@ -1774,10 +1821,14 @@ bool execute(const Stmt* const begin, const Stmt* const end)
                 value.type = ValueType::CALLABLE;
                 value.callable.numParams = stmt->funDecl.numParams;
                 value.callable.native = nullptr;
-                // we don't want to execute BLOCK statement (we push env in evaluateCall()
+
+                // we don't want to execute a BLOCK statement (we push env in evaluateCall()
                 // manually) so we skip it; FUN_DECL is also skipped
                 value.callable.stmtBegin = stmt + 1 + 1;
+
+                // set BLOCK_END as end
                 value.callable.stmtEnd = stmt + 1 + stmt->funDecl.count - 1;
+
                 value.callable.paramStr = stmt->funDecl.paramStr;
 
                 const Token& token = stmt->funDecl.identifierToken;
@@ -1805,7 +1856,7 @@ bool execute(const Stmt* const begin, const Stmt* const end)
                 break;
             }
 
-            case StmtType::IF_STMT: // this is so fucking tricky; bad design
+            case StmtType::IF_STMT:
             {
                 Value value;
                 const Stmt* lastChildStmt = stmt + stmt->ifStmt.count + stmt->ifStmt.elseCount;
@@ -1844,6 +1895,17 @@ bool execute(const Stmt* const begin, const Stmt* const end)
 
                 stmt = lastChildStmt;
                 break;
+            }
+            case StmtType::RETURN_STMT:
+            {
+                Value value;
+
+                if(!evaluate(value, _context.expressions[stmt->returnStmt.idxExpr]))
+                    return false;
+
+                const char* varName = "return";
+                _context.addVar(varName, strlen(varName), value);
+                return false; // hacky...
             }
 
             default: assert(false);
@@ -1912,7 +1974,7 @@ int main(int argc, const char* const * const argv)
         rewind(file);
         source.resize(size);
         // might read less than size on windows - e.g. \r\n to \n conversion
-        // to match ftell() we have to open the file in binary mode
+        // to match ftell() we have to open the file in a binary mode
         fread(source.data(), 1, size, file);
         fclose(file);
         source.pushBack('\0');
@@ -1933,7 +1995,7 @@ int main(int argc, const char* const * const argv)
     else // repl session
     {
         source.reserve(500);
-        // but now we can't terminate when a program is running
+        // but now we can't terminate when a script is running
         signal(SIGINT, keyboardInterrupt);
         printf("super LOX - implementation of craftinginterpreters.com LOX language in C++\n");
     }
@@ -1955,7 +2017,8 @@ int main(int argc, const char* const * const argv)
         {
             printf(">>> ");
 
-            // we shouldn't clear this things; and we shouldn't grow them, wo we don't
+            // @TODO:
+            // we shouldn't clear these things; and we shouldn't grow them, wo we don't
             // invalidate the pointers...
             // it works if functions are not used...
             // need to change the design
