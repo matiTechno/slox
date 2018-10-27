@@ -44,7 +44,7 @@ fun dodo(l, r, t, y, u, w)
 dodo(1, 2, 3, 4, 5, 6);
 
 print "...............";
-//print sin(4);
+print sin(4);
 
 var lol = 2;
 
