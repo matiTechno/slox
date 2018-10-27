@@ -184,6 +184,8 @@ struct Environment
 {
     int idxVar;
     int count;
+    bool canBeShadowed;
+    int idxParentEnv;
 };
 
 enum class ErrorType
@@ -198,10 +200,7 @@ enum class StmtType
     EXPRESSION,
     PRINT,
     VAR_DECL,
-    BLOCK_START,
-    BLOCK_END,
-    // @ use IF_STMT_START, IF_STMT_END instead? same for WHILE_STMT
-    // (keep it consistent with BLOCK)
+    BLOCK,
     IF_STMT,
     WHILE_STMT,
     FUN_DECL,
@@ -255,6 +254,12 @@ struct Stmt
         {
             int idxExpr;
         } returnStmt;
+
+        struct
+        {
+            bool canBeShadowed;
+            int count;
+        } block;
     };
 };
 
@@ -273,10 +278,23 @@ struct Context
     char byteArray[10000];
     int end = 0;
 
+    struct
+    {
+        // set only during VAR_DECL execution
+        const char* begin = nullptr;
+        int len;
+    } newVarName;
+
+    struct
+    {
+        bool success;
+        Value value;
+    } funReturn; // eh.
+
     Context()
     {
-        // push global env
-        environments.pushBack({0, 0});
+        // push global env; we can't use pushEnv() here
+        environments.pushBack({0, 0, true});
 
         // add some native functions
         const char* name;
@@ -322,9 +340,12 @@ struct Context
         }
     }
 
-    void pushEnv()
+    void pushEnv(bool canBeShadowed) {pushEnv(canBeShadowed, environments.size() - 1);}
+
+    void pushEnv(bool canBeShadowed, const int idxParentEnv)
     {
-        environments.pushBack({environments.back().idxVar + environments.back().count, 0});
+        environments.pushBack({environments.back().idxVar + environments.back().count, 0,
+                canBeShadowed, idxParentEnv});
     }
 
     void  popEnv()
@@ -339,24 +360,40 @@ struct Context
         int idx = -1;
         for(int i = variables.size() - 1; i >= 0; --i)
         {
-            if(strncmp(variables[i].name, name, len) == 0)
+            if(int(strlen(variables[i].name)) == len &&
+               strncmp(variables[i].name, name, len) == 0)
             {
                 idx = i;
                 break;
             }
         }
 
-        if(idx == -1 || idx < environments.back().idxVar)
+        // order is important
+
+        if(idx == -1)
         {
             variables.pushBack( {addString(name, len), value} );
             environments.back().count += 1;
         }
-        // we allow variable redefinition but only for globals
+        // we allow variable redeclaration for globals
         else if(environments.back().idxVar == 0)
         {
             variables[idx].value = value;
         }
-        else
+        // variable is already defined but in upper scope
+        else if(idx < environments.back().idxVar)
+        {
+            const Environment& parentEnv = environments[environments.back().idxParentEnv];
+
+            if( (idx < parentEnv.idxVar) || parentEnv.canBeShadowed)
+            {
+                variables.pushBack( {addString(name, len), value} );
+                environments.back().count += 1;
+            }
+            else
+                return false;
+        }
+        else // variable is already declared in the current scope, error
             return false;
 
         return true;
@@ -364,10 +401,22 @@ struct Context
 
     Var* getVar(const char* const name, int len)
     {
-        for(int i = variables.size() - 1; i >= 0; --i)
+        const Environment* env = environments.end() - 1;
+        for(;;)
         {
-            if(strncmp(variables[i].name, name, len) == 0)
-                return &variables[i];
+            for(int i = env->idxVar; i < env->idxVar + env->count; ++i)
+            {
+                if(int(strlen(variables[i].name)) == len &&
+                   strncmp(variables[i].name, name, len) == 0)
+                {
+                    return &variables[i];
+                }
+            }
+
+            if(env == environments.begin())
+                break;
+
+            env = &environments[env->idxParentEnv];
         }
         return nullptr;
     }
@@ -1010,6 +1059,15 @@ bool evaluatePrimary(Value& value, const Expr& expr)
         }
         case TokenType::IDENTIFIER:
         {
+            if(_context.newVarName.begin &&
+               strncmp(token.string.begin, _context.newVarName.begin,
+                        min(token.string.len, _context.newVarName.len)) == 0)
+            {
+                printError(ErrorType::RUNTIME, token.col, token.line,
+                        "cannot read variable in its own initializer");
+                return false;
+            }
+
             const Var* var = _context.getVar(token.string.begin, token.string.len);
             if(!var)
             {
@@ -1188,6 +1246,7 @@ bool execute(const Stmt* const begin, const Stmt* const end);
 
 bool evaluateCall(Value& outputValue, const Expr& expr)
 {
+
     Value value;
     if(!evaluate(value, _context.expressions[expr.call.idxExprCallee])) return false;
 
@@ -1222,9 +1281,7 @@ bool evaluateCall(Value& outputValue, const Expr& expr)
     }
     else
     {
-        // @TODO:
-        // we have to rethink the design; only global env should be parent to function env
-        _context.pushEnv();
+        _context.pushEnv(true, 0); // can't be shadowed, global env is parent
 
         const char* paramStr = value.callable.paramStr;
 
@@ -1232,21 +1289,23 @@ bool evaluateCall(Value& outputValue, const Expr& expr)
         {
             const int paramStrLen = strlen(paramStr);
             _context.addVar(paramStr, paramStrLen, argValues[i]);
-            paramStr += paramStrLen + 1; // @ this is a big hack...
+            paramStr += paramStrLen + 1; // @
         }
+
+        _context.funReturn.success = false;
 
         const bool success = execute(value.callable.stmtBegin, value.callable.stmtEnd);
 
-        const char* returnVarName = "return";
-        const Var* returnVar = _context.getVar(returnVarName, strlen(returnVarName));
+        if(!success && !_context.funReturn.success) // execute() really failed (runtime error)
+        {
+            _context.popEnv();
+            return false;
+        }
 
-        if(!success && !returnVar)
-            return false; // execute() really failed (runtime error)
-
-        if(!returnVar)
+        if(!_context.funReturn.success)
             outputValue.type = ValueType::NIL;
         else
-            outputValue = returnVar->value;
+            outputValue = _context.funReturn.value;
 
         _context.popEnv();
     }
@@ -1276,8 +1335,19 @@ bool print(const Expr& expr)
     {
         case ValueType::BOOLEAN: printf("%s\n", value.boolean ? "true" : "false"); break;
         case ValueType::NIL: printf("nil\n"); break;
-        case ValueType::STRING: printf("\"%s\"\n", value.string); break;
-        case ValueType::NUMBER: printf("%f\n", value.number); break;
+        case ValueType::STRING: printf("%s\n", value.string); break;
+
+        case ValueType::NUMBER:
+        {
+            double dummy;
+
+            if(modf(value.number, &dummy))
+                printf("%f\n", value.number);
+            else
+                printf("%d\n", int(value.number));
+
+            break;
+        }
 
         case ValueType::CALLABLE:
         {
@@ -1323,7 +1393,10 @@ bool expressionStatement(Array<Stmt>& statements, const Token** const token)
 
 bool blockStatement(Array<Stmt>& statements, const Token** const token)
 {
-    statements.pushBack({StmtType::BLOCK_START});
+    statements.pushBack({});
+    const int idxBlock = statements.size() - 1;
+    statements[idxBlock].type = StmtType::BLOCK;
+    statements[idxBlock].block.canBeShadowed = true;
 
     while((**token).type != TokenType::RIGHT_BRACE &&
           (**token).type != TokenType::LOX_EOF)
@@ -1339,7 +1412,8 @@ bool blockStatement(Array<Stmt>& statements, const Token** const token)
     }
 
     ++(*token);
-    statements.pushBack({StmtType::BLOCK_END});
+
+    statements[idxBlock].block.count = statements.size() - 1 - idxBlock;
     return true;
 }
 
@@ -1389,13 +1463,16 @@ bool statement(Array<Stmt>& statements, const Token** const token)
             ++(*token);
 
             statements.pushBack({});
-            Stmt& stmt = statements.back();
-            stmt.type = StmtType::IF_STMT;
+
+            // we can't use pointers here due to pointer invalidation
+
+            const int idxIf = statements.size() - 1;
+            statements[idxIf].type = StmtType::IF_STMT;
 
             {
                 Expr expr;
                 if(!expression(expr, token)) return false;
-                stmt.ifStmt.idxExpr = _context.addExpr(expr);
+                statements[idxIf].ifStmt.idxExpr = _context.addExpr(expr);
             }
 
             if((**token).type != TokenType::RIGHT_PAREN)
@@ -1409,15 +1486,17 @@ bool statement(Array<Stmt>& statements, const Token** const token)
 
             if(!statement(statements, token)) return false;
 
-            stmt.ifStmt.count = &statements.back() - &stmt;
+            statements[idxIf].ifStmt.count = statements.size() - 1 - idxIf;
 
             if((**token).type != TokenType::ELSE)
-                stmt.ifStmt.elseCount = 0;
+                statements[idxIf].ifStmt.elseCount = 0;
             else
             {
                 ++(*token);
                 if(!statement(statements, token)) return false;
-                stmt.ifStmt.elseCount = &statements.back() - (&stmt + stmt.ifStmt.count);
+
+                statements[idxIf].ifStmt.elseCount = statements.size() - 1 -
+                    (idxIf + statements[idxIf].ifStmt.count);
             }
 
             break;
@@ -1437,13 +1516,13 @@ bool statement(Array<Stmt>& statements, const Token** const token)
             ++(*token);
 
             statements.pushBack({});
-            Stmt& stmt = statements.back();
-            stmt.type = StmtType::WHILE_STMT;
+            const int idxWhile = statements.size() - 1;
+            statements[idxWhile].type = StmtType::WHILE_STMT;
 
             {
                 Expr expr;
                 if(!expression(expr, token)) return false;
-                stmt.whileStmt.idxExpr = _context.addExpr(expr);
+                statements[idxWhile].whileStmt.idxExpr = _context.addExpr(expr);
             }
 
             if((**token).type != TokenType::RIGHT_PAREN)
@@ -1454,10 +1533,8 @@ bool statement(Array<Stmt>& statements, const Token** const token)
             }
 
             ++(*token);
-
             if(!statement(statements, token)) return false;
-
-            stmt.whileStmt.count = &statements.back() - &stmt;
+            statements[idxWhile].whileStmt.count = statements.size() - 1 - idxWhile;
             break;
         }
 
@@ -1475,7 +1552,10 @@ bool statement(Array<Stmt>& statements, const Token** const token)
             ++(*token);
 
             // so we won't 'leak' a variable from init statement
-            statements.pushBack({StmtType::BLOCK_START});
+            statements.pushBack({});
+            const int idxBlock = statements.size() - 1;
+            statements[idxBlock].type = StmtType::BLOCK;
+            statements[idxBlock].block.canBeShadowed = false;
 
             // 1. init statement
             if((**token).type == TokenType::SEMICOLON)
@@ -1529,19 +1609,19 @@ bool statement(Array<Stmt>& statements, const Token** const token)
 
             // implement in terms of a while statement
             statements.pushBack({});
-            Stmt& stmt = statements.back();
-            stmt.type = StmtType::WHILE_STMT;
+            const int idxWhile = statements.size() - 1;
+            statements[idxWhile].type = StmtType::WHILE_STMT;
 
             if(idxConditionExpr != -1)
             {
-                stmt.whileStmt.idxExpr = idxConditionExpr;
+                statements[idxWhile].whileStmt.idxExpr = idxConditionExpr;
             }
             else
             {
                 Expr expr;
                 expr.type = ExprType::PRIMARY;
                 expr.primary.token = {TokenType::TRUE};
-                stmt.whileStmt.idxExpr = _context.addExpr(expr);
+                statements[idxWhile].whileStmt.idxExpr = _context.addExpr(expr);
             }
 
             if(!statement(statements, token)) return false;
@@ -1554,8 +1634,8 @@ bool statement(Array<Stmt>& statements, const Token** const token)
                 statements.pushBack(stmt);
             }
 
-            stmt.whileStmt.count = &statements.back() - &stmt;
-            statements.pushBack({StmtType::BLOCK_END});
+            statements[idxWhile].whileStmt.count = statements.size() - 1 - idxWhile;
+            statements[idxBlock].block.count = statements.size() - 1 - idxBlock;
             break;
         }
 
@@ -1655,10 +1735,10 @@ bool declaration(Array<Stmt>& statements, const Token** const token)
         }
 
         statements.pushBack({});
-        Stmt& stmt = statements.back();
-        stmt.type = StmtType::FUN_DECL;
-        stmt.funDecl.identifierToken = **token;
-        stmt.funDecl.numParams = 0;
+        const int idxFunDecl = statements.size() - 1;
+        statements[idxFunDecl].type = StmtType::FUN_DECL;
+        statements[idxFunDecl].funDecl.identifierToken = **token;
+        statements[idxFunDecl].funDecl.numParams = 0;
 
         ++(*token);
 
@@ -1675,7 +1755,7 @@ bool declaration(Array<Stmt>& statements, const Token** const token)
         {
             while(true)
             {
-                if(stmt.funDecl.numParams == MAXARGS)
+                if(statements[idxFunDecl].funDecl.numParams == MAXARGS)
                 {
                     snprintf(_context.scratchBuf, getSize(_context.scratchBuf),
                             "LOX supports only %d function arguments", MAXARGS);
@@ -1695,10 +1775,10 @@ bool declaration(Array<Stmt>& statements, const Token** const token)
                 const char* paramStr = _context.addString((**token).string.begin,
                         (**token).string.len);
 
-                if(stmt.funDecl.numParams == 0)
-                    stmt.funDecl.paramStr = paramStr;
+                if(statements[idxFunDecl].funDecl.numParams == 0)
+                    statements[idxFunDecl].funDecl.paramStr = paramStr;
 
-                ++stmt.funDecl.numParams;
+                statements[idxFunDecl].funDecl.numParams += 1;
                 ++(*token);
 
                 if((**token).type != TokenType::COMMA)
@@ -1728,7 +1808,7 @@ bool declaration(Array<Stmt>& statements, const Token** const token)
         ++(*token);
 
         if(!blockStatement(statements, token)) return false;
-        stmt.funDecl.count = &statements.back() - &stmt;
+        statements[idxFunDecl].funDecl.count = statements.size() - 1 - idxFunDecl;
         return true;
     }
     else
@@ -1750,6 +1830,7 @@ bool parse(Array<Stmt>& statements, const Array<Token>& tokens)
 
             // go to the next statement
             // it is not 100% accurate but that's fine
+            // this should be inside declaration() for better results
 
             while(token->type != TokenType::LOX_EOF)
             {
@@ -1798,13 +1879,15 @@ bool execute(const Stmt* const begin, const Stmt* const end)
                 break;
             }
 
-            // @TODO: implement this:
-            // Error at 'lol': Cannot read local variable in its own initializer.
             case StmtType::VAR_DECL:
             {
+                const Token& token = stmt->varDecl.identifierToken;
+
+                _context.newVarName.begin = token.string.begin;
+                _context.newVarName.len = token.string.len;
+
                 Value value;
                 if(!evaluate(value, _context.expressions[stmt->varDecl.idxExpr])) return false;
-                const Token& token = stmt->varDecl.identifierToken;
 
                 if(!_context.addVar(token.string.begin, token.string.len, value))
                 {
@@ -1813,21 +1896,19 @@ bool execute(const Stmt* const begin, const Stmt* const end)
                     return false;
                 }
 
+                _context.newVarName.begin = nullptr;
+
                 break;
             }
+
             case StmtType::FUN_DECL:
             {
                 Value value;
                 value.type = ValueType::CALLABLE;
                 value.callable.numParams = stmt->funDecl.numParams;
                 value.callable.native = nullptr;
-
-                // we don't want to execute a BLOCK statement (we push env in evaluateCall()
-                // manually) so we skip it; FUN_DECL is also skipped
-                value.callable.stmtBegin = stmt + 1 + 1;
-
-                // set BLOCK_END as end
-                value.callable.stmtEnd = stmt + 1 + stmt->funDecl.count - 1;
+                value.callable.stmtBegin = stmt + 1;
+                value.callable.stmtEnd = value.callable.stmtBegin + stmt->funDecl.count;
 
                 value.callable.paramStr = stmt->funDecl.paramStr;
 
@@ -1844,15 +1925,19 @@ bool execute(const Stmt* const begin, const Stmt* const end)
                 stmt += stmt->funDecl.count;
                 break;
             }
-            case StmtType::BLOCK_START:
-            {
-                _context.pushEnv();
-                break;
-            }
 
-            case StmtType::BLOCK_END:
+            case StmtType::BLOCK:
             {
+                _context.pushEnv(stmt->block.canBeShadowed);
+
+                if(!execute(stmt + 1, stmt + 1 + stmt->block.count))
+                {
+                    _context.popEnv();
+                    return false;
+                }
+
                 _context.popEnv();
+                stmt += stmt->block.count;
                 break;
             }
 
@@ -1878,7 +1963,7 @@ bool execute(const Stmt* const begin, const Stmt* const end)
 
             case StmtType::WHILE_STMT:
             {
-                const Stmt* lastChildStmt = stmt + stmt->whileStmt.count;
+                const Stmt* lastBodyStmt = stmt + stmt->whileStmt.count;
 
                 for(;;)
                 {
@@ -1890,12 +1975,14 @@ bool execute(const Stmt* const begin, const Stmt* const end)
                     if(!isTrue(value))
                         break;
 
-                    if(!execute(stmt + 1, lastChildStmt + 1)) return false;
+                    if(!execute(stmt + 1, lastBodyStmt + 1))
+                        return false;
                 }
 
-                stmt = lastChildStmt;
+                stmt = lastBodyStmt;
                 break;
             }
+
             case StmtType::RETURN_STMT:
             {
                 Value value;
@@ -1903,8 +1990,9 @@ bool execute(const Stmt* const begin, const Stmt* const end)
                 if(!evaluate(value, _context.expressions[stmt->returnStmt.idxExpr]))
                     return false;
 
-                const char* varName = "return";
-                _context.addVar(varName, strlen(varName), value);
+                _context.funReturn.success = true;
+                _context.funReturn.value = value;
+
                 return false; // hacky...
             }
 
@@ -2032,11 +2120,6 @@ int main(int argc, const char* const * const argv)
             // for e.g. variable names
 
             // _context.end = 0;
-
-            // remove all local variables (e.g. previous command failed executing deep
-            // in the stack)
-            while(_context.environments.size() > 1)
-                _context.popEnv();
 
             for(;;)
             {

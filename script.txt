@@ -1,17 +1,22 @@
 // this is a test script for super lox
 
+var timestart = clock();
+
+print 4.32131231;
+
 fun add(l,r)
 {
     var i = 4 + 5;
     i = 0;
     return l+r;
+    print "ERROR!!!!!!!!!!!!!!!!!";
     i = i + 1;
     print 2;
 }
 
 print add(1000, 2000);
 
-// this is a killer... 1 GB is not enough
+// this is a killer...
 fun fibonacci(n) {
   if (n <= 1) return n;
   return fibonacci(n - 2) + fibonacci(n - 1);
@@ -27,18 +32,8 @@ print ".............. end fibonnacii";
 
 var count = 0;
 
-fun add(l, r)
-{
-    if(count < 10)
-    {
-        print l + r;
-        count = count + 1;
-        add(l + 1, r + 1);
-    }
-}
-
 print "...............";
-add(1, 2);
+print add(3, 8);
 print "dodo...............";
 
 fun dodo(l, r, t, y, u, w)
@@ -49,13 +44,11 @@ fun dodo(l, r, t, y, u, w)
 dodo(1, 2, 3, 4, 5, 6);
 
 print "...............";
-print sin(4);
-
-var timestart = clock();
+//print sin(4);
 
 var lol = 2;
 
-for (var lol = 10 + lol; lol > -1; lol = lol - 1)
+for (var lol = 10; lol > -1; lol = lol - 1)
 {
     print lol;
     lol = lol - 1;
@@ -68,6 +61,7 @@ print "...........";
 var i = 0;
 while(i < 9)
 {
+    var k;
     print i;
     i = i + 1;
 }
@@ -76,7 +70,6 @@ print "........";
 
 while((i = i + 1) < 13)
     print i;
-
 
 print "hi" or 2; // "hi".
 print nil or "yes"; // "yes".
@@ -120,33 +113,43 @@ print "should print 3";
 print z;
 
 if(1 and !nil)
-    print "should print this";
+    print "1) should print this";
 else
-    print "should not print this";
+    print "1) should not print this !!!!!!!!!!!!!!!!!!!!!!!!";
 
 print "done with testing AND / OR; now we will test if and else";
 print "................................................................";
 
+if(1 and !nil)
+{
+    print "1) should print this";
+}
+else
+    print "1) should not print this !!!!!!!!!!!!!!!!!!!!!!!!";
+
+if(1 and !nil)
+{
+    print "1) should print this";
+}
+else
+{
+    print "1) should not print this !!!!!!!!!!!!!!!!!!!!!!!!";
+}
+
+if(1 and !nil)
+    print "1) should print this";
+else
+{
+    print "1) should not print this !!!!!!!!!!!!!!!!!!!!!!!!";
+}
+
 var y = 8;
 var y = 8; // we allow global variable redefinition
-if(6 < 8)
-{
-    print "should print 12:";
-    var y = y + 4;
-    print y;
-}
-else
-{
-    y = 10;
-}
-
-print "should print 8:";
-print y;
 
 if(false)
-    print "should not print this";
+    print "2) should not print this !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!";
 else
-    print "should print this";
+    print "2) should print this";
 
 if ( true)
 {
@@ -161,13 +164,13 @@ print y;
 
 if(true)
 {
-    var y = y - 5;
+    var t = 5;
 
     if(true)
     {
         var z = 2;
-        var y = y + z;
-        print "should print 12";
+        var y = t + z;
+        print "should print 7";
         print y;
     }
 }
@@ -187,7 +190,7 @@ print "................................................................";
 var a = 5;
 print a;
 {
-    var a = a + 6;
+    var a = 6;
     print a;
 }
 print a;
@@ -226,6 +229,56 @@ print lolo + " jest fajnym" + " kolesiem.";
     var a7 = 7;
     print a1 + a2 + a3 + a4 + a5 + a6 + a7;
 }
+
+print "testing scopes; functions";
+
+var a = 666;
+
+fun test()
+{
+    print "a equals to:";
+    print a;
+}
+
+{
+    var a = 777;
+    test();
+}
+
+print "a should equal to:";
+print a;
+var a;
+
+for(var i = 0; i < 5; i = i + 1)
+    print i;
+
+for(var i = 5; i < 10; i = i + 1)
+{
+    print i;
+}
+
+fun empty() {return;}
+
+print empty();
+
+for(var i = 10; i < 15; i = i + 1)
+{
+    var t;
+    t = 10;
+    t = 22;
+    print i;
+}
+
+print i;
+
+fun bobos()
+{
+    return add;
+}
+
+print bobos()(2, 3);
+
+print 666.666;
 
 var timeend = clock();
 print "time elapsed: ";
