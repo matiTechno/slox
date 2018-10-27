@@ -7,6 +7,13 @@
 #include <time.h>
 #include <math.h>
 
+// @TODO:
+// closures, classes, inheritance
+// api to call interpreter from code
+// execute() and executeFile() functions to execute lox from lox
+// there is no need to store variable names in byteArray, use pointers to source
+// move _context.end back when popping environment
+
 bool isDigit(const char c) {return c >= '0' && c <= '9';}
 
 bool isAlphanumeric(const char c)
