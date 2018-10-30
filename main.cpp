@@ -1346,12 +1346,7 @@ bool print(const Expr& expr)
         case ValueType::NUMBER:
         {
             double dummy;
-
-            if(modf(value.number, &dummy))
-                printf("%f\n", value.number);
-            else
-                printf("%d\n", int(value.number));
-
+            printf("%.*f\n", modf(value.number, &dummy) ? 6 : 0, value.number);
             break;
         }
 
